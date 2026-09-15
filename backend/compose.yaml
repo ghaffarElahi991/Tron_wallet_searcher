@@ -1,0 +1,61 @@
+x-app-environment: &app-environment
+  TRONFORGE_ENVIRONMENT: development
+  TRONFORGE_DATABASE_URL: postgresql+psycopg://tronforge:tronforge@database:5432/tronforge
+  TRONFORGE_JWT_SECRET: local-development-jwt-secret-change-before-production
+  TRONFORGE_WORKER_API_KEY: local-development-worker-key-change-before-production
+  TRONFORGE_RESULT_ENCRYPTION_KEY: local-development-result-key-change-before-production
+  TRONFORGE_ADMIN_USERNAME: admin
+  TRONFORGE_ADMIN_PASSWORD: local-development-admin-password-change-me
+  TRONFORGE_CORS_ORIGINS: http://localhost:3000
+  TRONFORGE_GENERATOR_MODE: simulator
+  TRONFORGE_SIMULATED_GPU_COUNT: 2
+
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: tronforge
+      POSTGRES_USER: tronforge
+      POSTGRES_PASSWORD: tronforge
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tronforge -d tronforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build: .
+    environment: *app-environment
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "8000:8000"
+
+  generator:
+    build: .
+    environment: *app-environment
+    command: ["tronforge-generator"]
+    depends_on:
+      api:
+        condition: service_healthy
+    stop_grace_period: 10s
+
+volumes:
+  postgres_data:
