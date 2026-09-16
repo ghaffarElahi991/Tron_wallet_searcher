@@ -2,7 +2,7 @@
 
 ## One-command local installation (Ubuntu 24.04)
 
-Run the installer as your normal user from this directory:
+Run the installer as root or as a normal user with `sudo` access from this directory:
 
 ```bash
 ./install.sh --check
@@ -11,7 +11,7 @@ Run the installer as your normal user from this directory:
 
 It installs Ubuntu build tools and PostgreSQL, Node.js 24 when an existing Node.js is too old,
 the Python 3.12 backend dependencies, locked frontend dependencies, database migrations, and native
-CPU/CUDA builds with self-tests. `sudo` and internet access are required. It does not install or
+CPU/CUDA builds with self-tests. Root privileges and internet access are required. It does not install or
 replace NVIDIA drivers or the CUDA toolkit; when `nvcc` and an NVIDIA GPU are already available it
 builds and checks the CUDA generator, otherwise it builds only the CPU reference CLI.
 
@@ -22,3 +22,4 @@ file with random secrets. It never starts the API, generator,
 frontend, or Telegram bot automatically; see [backend setup](backend/README.md) and
 [frontend setup](frontend/README.md) for run commands. Review the generated admin password in
 `backend/.env` before signing in, and keep that file private.
+Files created by a root-run installation will be owned by root.

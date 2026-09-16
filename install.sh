@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ubuntu 24.04 installer for the local TronForge stack. Run as your normal user.
+# Ubuntu 24.04 installer for the local TronForge stack. Root or a sudo-capable user may run it.
 set -Eeuo pipefail
 umask 077
 
@@ -12,6 +12,23 @@ NODE_TEMP_DIR=""
 
 step() { printf '\n==> %s\n' "$1"; }
 fail() { printf 'Installer error: %s\n' "$1" >&2; exit 1; }
+run_as_root() {
+  if [[ "$EUID" -eq 0 ]]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+run_as_postgres() {
+  (
+    cd /tmp
+    if [[ "$EUID" -eq 0 ]]; then
+      runuser -u postgres -- "$@"
+    else
+      sudo -u postgres -- "$@"
+    fi
+  )
+}
 cleanup() {
   if [[ -n "$NODE_TEMP_DIR" && -d "$NODE_TEMP_DIR" ]]; then
     rm -f -- "$NODE_TEMP_DIR/nodesource.key" "$NODE_TEMP_DIR/nodesource.gpg"
@@ -30,7 +47,7 @@ if [[ "${1:-}" == "--check" && $# -eq 1 ]]; then
   step "Read-only prerequisite check"
   . /etc/os-release
   printf 'Operating system: %s %s\n' "$ID" "$VERSION_ID"
-  for tool in sudo python3.12 node npm cmake c++ psql pg_isready nvcc nvidia-smi; do
+  for tool in sudo runuser python3.12 node npm cmake c++ psql pg_isready nvcc nvidia-smi; do
     if command -v "$tool" >/dev/null 2>&1; then
       printf '%-14s %s\n' "$tool" "$(command -v "$tool")"
     else
@@ -51,23 +68,27 @@ if [[ "${1:-}" == "--check" && $# -eq 1 ]]; then
   exit 0
 fi
 [[ $# -eq 0 ]] || fail "Usage: ./install.sh [--check]"
-[[ "$(id -u)" -ne 0 ]] || fail "Run this script as your normal user, not with sudo."
 
 . /etc/os-release
 [[ "$ID" == "ubuntu" && "$VERSION_ID" == "24.04" ]] || \
   fail "This installer currently supports Ubuntu 24.04."
-command -v sudo >/dev/null 2>&1 || fail "sudo is required for system packages and PostgreSQL."
+if [[ "$EUID" -ne 0 ]]; then
+  command -v sudo >/dev/null 2>&1 || fail "sudo is required when running as a normal user."
+  sudo -v
+fi
 
 step "Install Ubuntu packages and PostgreSQL"
-sudo -v
-sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+run_as_root apt-get update
+run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   build-essential ca-certificates cmake curl gnupg libpq-dev libssl-dev \
-  openssl pkg-config postgresql postgresql-client python3.12 python3.12-venv
+  openssl pkg-config postgresql postgresql-client python3.12 python3.12-venv util-linux
+if [[ "$EUID" -eq 0 ]]; then
+  command -v runuser >/dev/null 2>&1 || fail "runuser is required to manage PostgreSQL as root."
+fi
 if command -v systemctl >/dev/null 2>&1; then
-  sudo systemctl enable --now postgresql || sudo service postgresql start
+  run_as_root systemctl enable --now postgresql || run_as_root service postgresql start
 else
-  sudo service postgresql start
+  run_as_root service postgresql start
 fi
 
 node_is_supported() {
@@ -82,12 +103,12 @@ if ! node_is_supported; then
     -o "$NODE_TEMP_DIR/nodesource.key"
   gpg --batch --yes --dearmor -o "$NODE_TEMP_DIR/nodesource.gpg" \
     "$NODE_TEMP_DIR/nodesource.key"
-  sudo install -m 0644 "$NODE_TEMP_DIR/nodesource.gpg" /usr/share/keyrings/tronforge-nodesource.gpg
+  run_as_root install -m 0644 "$NODE_TEMP_DIR/nodesource.gpg" /usr/share/keyrings/tronforge-nodesource.gpg
   printf '%s\n' \
     'deb [signed-by=/usr/share/keyrings/tronforge-nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main' \
-    | sudo tee /etc/apt/sources.list.d/tronforge-nodesource.list >/dev/null
-  sudo apt-get update
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+    | run_as_root tee /etc/apt/sources.list.d/tronforge-nodesource.list >/dev/null
+  run_as_root apt-get update
+  run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
   hash -r
   node_is_supported || fail "Node.js >=20.9 is still not on PATH; switch your shell's Node version."
 fi
@@ -113,12 +134,12 @@ fi
 NEW_ENV=0
 if [[ ! -e "${BACKEND_DIR}/.env" ]]; then
   step "Check that fresh local PostgreSQL targets are unused"
-  postgres_port="$(sudo -u postgres psql -X -At -d postgres -c 'SHOW port')"
+  postgres_port="$(run_as_postgres psql -X -At -d postgres -c 'SHOW port')"
   [[ "$postgres_port" == "5432" ]] || \
     fail "Local PostgreSQL is not using port 5432; configure backend/.env manually."
-  role_exists="$(sudo -u postgres psql -X -At -d postgres -c \
+  role_exists="$(run_as_postgres psql -X -At -d postgres -c \
     "SELECT 1 FROM pg_roles WHERE rolname = 'tronforge'")"
-  db_exists="$(sudo -u postgres psql -X -At -d postgres -c \
+  db_exists="$(run_as_postgres psql -X -At -d postgres -c \
     "SELECT 1 FROM pg_database WHERE datname = 'tronforge'")"
   if [[ "$role_exists" == "1" || "$db_exists" == "1" ]]; then
     fail "A tronforge role/database already exists but backend/.env does not; configure existing credentials manually."
@@ -159,7 +180,7 @@ PY
 fi
 
 step "Provision or verify PostgreSQL connection"
-(cd "$BACKEND_DIR" && "$VENV_PYTHON" - "$NEW_ENV" <<'PY'
+(cd "$BACKEND_DIR" && "$VENV_PYTHON" - "$NEW_ENV" "$EUID" <<'PY'
 import subprocess
 import sys
 
@@ -169,6 +190,9 @@ from sqlalchemy.engine import make_url
 from app.config import get_settings
 
 fresh_env = sys.argv[1] == "1"
+postgres_runner = ["runuser", "-u", "postgres", "--"] if sys.argv[2] == "0" else [
+    "sudo", "-u", "postgres", "--"
+]
 url = make_url(get_settings().database_url)
 if url.drivername != "postgresql+psycopg":
     raise SystemExit("Installer requires a postgresql+psycopg database URL in backend/.env.")
@@ -186,10 +210,11 @@ if fresh_env and not local_target:
 if local_target:
     def postgres_query(statement: str) -> str:
         result = subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-X", "-At", "-d", "postgres", "-c", statement],
+            [*postgres_runner, "psql", "-X", "-At", "-d", "postgres", "-c", statement],
             capture_output=True,
             text=True,
             check=True,
+            cwd="/tmp",
         )
         return result.stdout.strip()
 
@@ -214,18 +239,20 @@ if local_target:
     else:
         password_literal = "'" + url.password.replace("'", "''") + "'"
         subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", "postgres"],
+            [*postgres_runner, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", "postgres"],
             input=f"CREATE ROLE tronforge LOGIN PASSWORD {password_literal};\n",
             capture_output=True,
             text=True,
             check=True,
+            cwd="/tmp",
         )
     if not db_exists:
         subprocess.run(
-            ["sudo", "-u", "postgres", "createdb", "-O", "tronforge", "tronforge"],
+            [*postgres_runner, "createdb", "-O", "tronforge", "tronforge"],
             capture_output=True,
             text=True,
             check=True,
+            cwd="/tmp",
         )
 
 try:
