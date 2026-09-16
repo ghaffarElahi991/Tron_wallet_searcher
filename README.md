@@ -1,6 +1,6 @@
 # TronForge wallet generator
 
-## One-command local installation (Ubuntu 24.04)
+## One-command local installation (APT and DNF Linux distributions)
 
 Run the installer as root or as a normal user with `sudo` access from this directory:
 
@@ -9,9 +9,13 @@ Run the installer as root or as a normal user with `sudo` access from this direc
 ./install.sh
 ```
 
-It installs Ubuntu build tools and PostgreSQL, Node.js 24 when an existing Node.js is too old,
-the Python 3.12 backend dependencies, locked frontend dependencies, database migrations, and native
-CPU/CUDA builds with self-tests. Root privileges and internet access are required. It does not install or
+It installs build tools and PostgreSQL on Debian/Ubuntu (APT) or Fedora/RHEL derivatives (DNF),
+Node.js 24 when an existing Node.js is too old, Python 3.12 (using a managed Python when the
+distribution does not ship it), backend dependencies, locked frontend dependencies, database
+migrations, and native CPU/CUDA builds with self-tests. It also uses a temporary newer CMake
+when the distribution's CMake is older than 3.24. OpenSSL 3 is required; the installer stops with a
+clear error if the distribution supplies an older version. Root privileges and internet access are
+required. Linux distributions without APT or DNF need a separate package setup. It does not install or
 replace NVIDIA drivers or the CUDA toolkit; when `nvcc` and an NVIDIA GPU are already available it
 builds and checks the CUDA generator, otherwise it builds only the CPU reference CLI.
 
