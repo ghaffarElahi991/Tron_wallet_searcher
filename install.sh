@@ -11,6 +11,10 @@ VENV_PYTHON="${BACKEND_DIR}/.venv/bin/python"
 NODE_TEMP_DIR=""
 PY_BOOTSTRAP_DIR=""
 UV_BIN=""
+CUDA_TEMP_DIR=""
+CUDA_COMPILER=""
+CPU_ONLY=0
+INSTALL_DRIVER=0
 
 step() { printf '\n==> %s\n' "$1"; }
 fail() { printf 'Installer error: %s\n' "$1" >&2; exit 1; }
@@ -38,6 +42,9 @@ cleanup() {
   fi
   if [[ "$PY_BOOTSTRAP_DIR" == /tmp/tronforge-uv.* && -d "$PY_BOOTSTRAP_DIR" ]]; then
     rm -r -- "$PY_BOOTSTRAP_DIR" 2>/dev/null || true
+  fi
+  if [[ "$CUDA_TEMP_DIR" == /tmp/tronforge-cuda.* && -d "$CUDA_TEMP_DIR" ]]; then
+    rm -r -- "$CUDA_TEMP_DIR" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -67,6 +74,45 @@ if [[ "$PACKAGE_MANAGER" == "unsupported" ]]; then
   fi
 fi
 
+nvidia_gpu_visible() {
+  command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1
+}
+nvidia_gpu_hardware_present() {
+  local vendor_file vendor pci_class
+  for vendor_file in /sys/bus/pci/devices/*/vendor; do
+    [[ -r "$vendor_file" ]] || continue
+    IFS= read -r vendor < "$vendor_file" || continue
+    [[ "$vendor" == "0x10de" ]] || continue
+    IFS= read -r pci_class < "${vendor_file%/vendor}/class" || continue
+    [[ "$pci_class" == 0x03* ]] && return 0
+  done
+  return 1
+}
+find_cuda_compiler() {
+  local candidate
+  if command -v nvcc >/dev/null 2>&1; then
+    CUDA_COMPILER="$(command -v nvcc)"
+    return 0
+  fi
+  for candidate in /usr/local/cuda/bin/nvcc /usr/local/cuda-*/bin/nvcc; do
+    if [[ -x "$candidate" ]]; then
+      CUDA_COMPILER="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+case "${1:-}" in
+  "") [[ $# -eq 0 ]] || fail "Usage: ./install.sh [--check|--cpu-only|--install-driver]" ;;
+  --check|--cpu-only|--install-driver)
+    [[ $# -eq 1 ]] || fail "Usage: ./install.sh [--check|--cpu-only|--install-driver]"
+    ;;
+  *) fail "Usage: ./install.sh [--check|--cpu-only|--install-driver]" ;;
+esac
+[[ "${1:-}" == "--cpu-only" ]] && CPU_ONLY=1
+[[ "${1:-}" == "--install-driver" ]] && INSTALL_DRIVER=1
+
 if [[ "${1:-}" == "--check" && $# -eq 1 ]]; then
   step "Read-only prerequisite check"
   printf 'Operating system: %s\n' "${PRETTY_NAME:-${ID:-unknown}}"
@@ -92,20 +138,76 @@ if [[ "${1:-}" == "--check" && $# -eq 1 ]]; then
   else
     printf 'backend/.env: absent (installer will create it)\n'
   fi
-  if command -v nvcc >/dev/null 2>&1 && command -v nvidia-smi >/dev/null 2>&1 \
-    && nvidia-smi -L >/dev/null 2>&1; then
-    printf 'CUDA GPU: visible (installer will build CUDA)\n'
+  if nvidia_gpu_visible; then
+    printf 'NVIDIA GPU: visible through the driver\n'
+  elif nvidia_gpu_hardware_present; then
+    printf 'NVIDIA GPU: detected on PCI bus, but driver is not working\n'
   else
-    printf 'CUDA GPU: not visible (installer will build CPU reference only)\n'
+    printf 'NVIDIA GPU: not detected on PCI bus or through the driver\n'
+  fi
+  if find_cuda_compiler; then
+    printf 'CUDA compiler: %s\n' "$CUDA_COMPILER"
+  else
+    printf 'CUDA compiler: missing; installer can add CUDA 12.8 on supported distributions\n'
   fi
   exit 0
 fi
-[[ $# -eq 0 ]] || fail "Usage: ./install.sh [--check]"
 [[ "$PACKAGE_MANAGER" != "unsupported" ]] || \
   fail "Automatic installation supports Debian/Ubuntu (apt) and Fedora/RHEL derivatives (dnf); detected ${PRETTY_NAME:-${ID:-unknown}}."
 if [[ "$EUID" -ne 0 ]]; then
   command -v sudo >/dev/null 2>&1 || fail "sudo is required when running as a normal user."
   sudo -v
+fi
+
+if [[ "$CPU_ONLY" -eq 0 ]] && ! nvidia_gpu_visible; then
+  if ! nvidia_gpu_hardware_present; then
+    fail "No NVIDIA GPU is visible. A CUDA driver/toolkit cannot create GPU hardware; use a GPU machine, or run ./install.sh --cpu-only for reference-only setup."
+  fi
+  if [[ "$INSTALL_DRIVER" -eq 0 ]]; then
+    fail "NVIDIA GPU hardware exists, but the driver cannot see it. On supported Ubuntu, run ./install.sh --install-driver (then reboot); otherwise install/fix the driver and rerun."
+  fi
+  [[ "${ID:-}" == "ubuntu" && "$PACKAGE_MANAGER" == "apt" ]] || \
+    fail "Automatic NVIDIA driver setup is offered only on Ubuntu. Install the distribution's NVIDIA driver manually, reboot, then rerun ./install.sh."
+  step "Install the Ubuntu-recommended NVIDIA compute driver"
+  run_as_root apt-get update
+  run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-drivers-common
+  if dpkg-query -W -f='${Package} ${Status}\n' 'nvidia-driver-*' 2>/dev/null | \
+      awk '$2 == "install" && $3 == "ok" && $4 == "installed" {found=1} END {exit !found}'; then
+    fail "An NVIDIA driver package is already installed but the GPU is not visible. Diagnose kernel modules, Secure Boot or reboot before changing drivers."
+  fi
+  run_as_root env DEBIAN_FRONTEND=noninteractive ubuntu-drivers install --gpgpu
+  selected_driver="$(dpkg-query -W -f='${Package} ${Status}\n' 'nvidia-driver-*' 2>/dev/null | \
+    awk '$2 == "install" && $3 == "ok" && $4 == "installed" && !found {print $1; found=1}' || true)"
+  if [[ "$selected_driver" =~ ^nvidia-driver-([0-9]+)-server ]]; then
+    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "nvidia-utils-${BASH_REMATCH[1]}-server"
+  elif [[ "$selected_driver" =~ ^nvidia-driver-([0-9]+) ]]; then
+    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "nvidia-utils-${BASH_REMATCH[1]}"
+  else
+    fail "Driver installation did not expose an installed NVIDIA driver package; check ubuntu-drivers output."
+  fi
+  fail "NVIDIA driver packages installed. Reboot this machine, confirm nvidia-smi -L works, then rerun ./install.sh. The installer will not reboot automatically."
+fi
+
+CUDA_REPO_CODE=""
+if [[ "$CPU_ONLY" -eq 0 ]] && ! find_cuda_compiler; then
+  [[ "$(uname -m)" == "x86_64" ]] || \
+    fail "Automatic CUDA 12.8 toolkit setup currently requires x86_64; install a toolkit for this architecture manually."
+  case "${ID:-}:${VERSION_ID:-}" in
+    ubuntu:20.04) CUDA_REPO_CODE="ubuntu2004" ;;
+    ubuntu:22.04) CUDA_REPO_CODE="ubuntu2204" ;;
+    ubuntu:24.04) CUDA_REPO_CODE="ubuntu2404" ;;
+    debian:12) CUDA_REPO_CODE="debian12" ;;
+    rhel:8|rhel:8.*|centos:8|centos:8.*|rocky:8|rocky:8.*|almalinux:8|almalinux:8.*) CUDA_REPO_CODE="rhel8" ;;
+    rhel:9|rhel:9.*|centos:9|centos:9.*|rocky:9|rocky:9.*|almalinux:9|almalinux:9.*) CUDA_REPO_CODE="rhel9" ;;
+    amzn:2023) CUDA_REPO_CODE="amzn2023" ;;
+    *) fail "CUDA toolkit is missing, and this OS (${PRETTY_NAME:-${ID:-unknown}}) has no validated CUDA 12.8 repository in the installer. Install a compatible CUDA toolkit manually, then rerun; use --cpu-only only for reference setup." ;;
+  esac
+  driver_version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | awk 'NR == 1 {print $1}')"
+  [[ "$driver_version" =~ ^([0-9]+)\.([0-9]+) ]] || \
+    fail "Cannot read the NVIDIA driver version; install a matching CUDA toolkit manually."
+  if (( BASH_REMATCH[1] < 570 || ( BASH_REMATCH[1] == 570 && BASH_REMATCH[2] < 211 ) )); then
+    fail "NVIDIA driver ${driver_version} is too old for the installer's pinned CUDA 12.8 toolkit. Update the driver or install a compatible older toolkit manually."
+  fi
 fi
 
 step "Install ${PACKAGE_MANAGER} packages and PostgreSQL"
@@ -127,6 +229,28 @@ fi
 openssl_major="$(openssl version | awk '{split($2, parts, "."); print parts[1]}')"
 [[ "$openssl_major" =~ ^[0-9]+$ && "$openssl_major" -ge 3 ]] || \
   fail "The native wallet generator requires OpenSSL 3; this distribution supplies an older version."
+if [[ -n "$CUDA_REPO_CODE" ]]; then
+  step "Install NVIDIA CUDA 12.8 toolkit (driver packages are not replaced)"
+  CUDA_TEMP_DIR="$(mktemp -d /tmp/tronforge-cuda.XXXXXX)"
+  if [[ "$PACKAGE_MANAGER" == "apt" ]]; then
+    curl -fsSL \
+      "https://developer.download.nvidia.com/compute/cuda/repos/${CUDA_REPO_CODE}/x86_64/cuda-keyring_1.1-1_all.deb" \
+      -o "${CUDA_TEMP_DIR}/cuda-keyring.deb"
+    run_as_root dpkg -i "${CUDA_TEMP_DIR}/cuda-keyring.deb"
+    run_as_root apt-get update
+    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-toolkit-12-8
+  else
+    cuda_repo_url="https://developer.download.nvidia.com/compute/cuda/repos/${CUDA_REPO_CODE}/x86_64/cuda-${CUDA_REPO_CODE}.repo"
+    curl -fsSL "$cuda_repo_url" -o "${CUDA_TEMP_DIR}/cuda.repo"
+    if [[ ! -e /etc/yum.repos.d/tronforge-cuda.repo ]]; then
+      run_as_root install -m 0644 "${CUDA_TEMP_DIR}/cuda.repo" /etc/yum.repos.d/tronforge-cuda.repo
+    elif ! run_as_root cmp -s "${CUDA_TEMP_DIR}/cuda.repo" /etc/yum.repos.d/tronforge-cuda.repo; then
+      fail "Existing /etc/yum.repos.d/tronforge-cuda.repo differs from NVIDIA's repository; review it manually."
+    fi
+    run_as_root dnf install -y cuda-toolkit-12-8
+  fi
+  find_cuda_compiler || fail "CUDA toolkit package installed but nvcc was not found under /usr/local/cuda*/bin."
+fi
 if [[ "$PACKAGE_MANAGER" == "dnf" ]] && ! pg_isready -q; then
   if [[ ! -f /var/lib/pgsql/data/PG_VERSION ]]; then
     [[ ! -d /var/lib/pgsql/data || -z "$(ls -A /var/lib/pgsql/data)" ]] || \
@@ -220,8 +344,7 @@ else
 fi
 
 CUDA_READY=0
-if command -v nvcc >/dev/null 2>&1 && command -v nvidia-smi >/dev/null 2>&1 \
-  && nvidia-smi -L >/dev/null 2>&1; then
+if [[ "$CPU_ONLY" -eq 0 ]] && find_cuda_compiler && nvidia_gpu_visible; then
   CUDA_READY=1
 fi
 
@@ -391,9 +514,9 @@ ctest --test-dir "${NATIVE_DIR}/build" --output-on-failure
 
 if [[ "$CUDA_READY" -eq 1 ]]; then
   step "Build and self-test CUDA wallet generator"
-  cmake -S "$NATIVE_DIR" -B "${NATIVE_DIR}/build-cuda" \
+  cmake --fresh -S "$NATIVE_DIR" -B "${NATIVE_DIR}/build-cuda" \
     -DCMAKE_BUILD_TYPE=Release -DTRONFORGE_REQUIRE_CUDA=ON \
-    -DCMAKE_CUDA_COMPILER="$(command -v nvcc)" \
+    -DCMAKE_CUDA_COMPILER="$CUDA_COMPILER" \
     -DCMAKE_CUDA_ARCHITECTURES=native
   cmake --build "${NATIVE_DIR}/build-cuda" --parallel
   ctest --test-dir "${NATIVE_DIR}/build-cuda" --output-on-failure
@@ -412,7 +535,7 @@ for device in devices:
     "${NATIVE_DIR}/build-cuda/tronforge-generator" gpu-self-test --device "$gpu_index"
   done <<< "$gpu_indices"
 else
-  printf '\nCUDA driver/toolkit or GPU not detected: CPU reference built; real GPU generation is unavailable.\n'
+  printf '\nCPU-only mode: reference CLI built; real GPU generation is unavailable.\n'
 fi
 
 step "Installation complete"

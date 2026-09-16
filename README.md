@@ -15,9 +15,16 @@ distribution does not ship it), backend dependencies, locked frontend dependenci
 migrations, and native CPU/CUDA builds with self-tests. It also uses a temporary newer CMake
 when the distribution's CMake is older than 3.24. OpenSSL 3 is required; the installer stops with a
 clear error if the distribution supplies an older version. Root privileges and internet access are
-required. Linux distributions without APT or DNF need a separate package setup. It does not install or
-replace NVIDIA drivers or the CUDA toolkit; when `nvcc` and an NVIDIA GPU are already available it
-builds and checks the CUDA generator, otherwise it builds only the CPU reference CLI.
+required. Linux distributions without APT or DNF need a separate package setup. A visible NVIDIA
+GPU is required for the default installation. If its driver works but `nvcc` is missing, the installer
+adds NVIDIA's pinned CUDA 12.8 toolkit on supported x86_64 Ubuntu/Debian/RHEL-derived releases and
+builds and self-tests the CUDA generator. It does not replace an existing NVIDIA driver. If the GPU
+is present but the driver is missing on Ubuntu, run `./install.sh --install-driver`, reboot manually,
+check `nvidia-smi -L`, and rerun `./install.sh`. On other distributions, install the driver using that
+distribution's instructions first. Driver installation can affect kernel modules and may require
+Secure Boot enrollment; the installer never reboots automatically. A machine without NVIDIA GPU
+hardware cannot perform real GPU generation. For reference-only setup, run `./install.sh --cpu-only`.
+That mode builds the CPU CLI but cannot run the CUDA scheduler in `./run.sh`.
 
 The installer keeps an existing `backend/.env` and database credentials
 untouched. When the configured URL names the local `tronforge` PostgreSQL role/database, it creates
