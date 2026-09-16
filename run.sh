@@ -82,6 +82,27 @@ devices = gpu_info.get("devices", [])
 if not gpu_info.get("cuda_compiled") or not devices:
     raise SystemExit("CUDA generator has no visible GPU; real wallet generation cannot start.")
 
+for device in devices:
+    device_index = device.get("index")
+    if not isinstance(device_index, int) or device_index < 0:
+        raise SystemExit("CUDA generator reported an invalid GPU device index.")
+    try:
+        result = subprocess.run(
+            [str(native_binary), "gpu-self-test", "--device", str(device_index)],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+        self_test = json.loads(result.stdout)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
+        details = getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or str(exc)
+        raise SystemExit(
+            f"CUDA cryptographic self-test failed on GPU {device_index}: {details.strip()}"
+        ) from exc
+    if not self_test.get("passed") or not self_test.get("chained_four_limb_passed"):
+        raise SystemExit(f"CUDA cryptographic self-test failed on GPU {device_index}.")
+
 for port in (8000, 3000):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         try:
@@ -90,6 +111,7 @@ for port in (8000, 3000):
             raise SystemExit(f"Local port {port} is already in use; stop the existing service.") from exc
 
 print(f"CUDA devices visible: {len(devices)}")
+print("CUDA cryptographic self-tests passed on every visible GPU.")
 print("API: 127.0.0.1:8000; web UI: 127.0.0.1:3000")
 if settings.telegram_public_access:
     print("WARNING: Telegram public access is enabled; group users may see wallet private keys.")
