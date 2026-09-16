@@ -17,5 +17,6 @@
 
 # logs and editor files
 *.log
+/runtime-logs/
 .DS_Store
 *.tsbuildinfo

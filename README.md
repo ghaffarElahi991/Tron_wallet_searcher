@@ -27,3 +27,28 @@ frontend, or Telegram bot automatically; see [backend setup](backend/README.md) 
 [frontend setup](frontend/README.md) for run commands. Review the generated admin password in
 `backend/.env` before signing in, and keep that file private.
 Files created by a root-run installation will be owned by root.
+
+## Start the complete local stack
+
+After installation, set `TRONFORGE_GENERATOR_MODE=cuda` and a valid
+`TRONFORGE_TELEGRAM_BOT_TOKEN` in `backend/.env`, and make sure the native CUDA generator and
+NVIDIA driver can see at least one GPU. Then run:
+
+```bash
+./run.sh --check
+./run.sh
+```
+
+This builds the web UI once and starts FastAPI, the CUDA scheduler, Telegram, and the watcher-free
+Next.js server. Both web services bind to `127.0.0.1`; from another computer, use an SSH tunnel for
+ports 3000 and 8000 or configure a proper HTTPS reverse proxy. For an SSH tunnel, run this on your
+computer and then open `http://localhost:3000`:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 -L 8000:127.0.0.1:8000 root@SERVER_IP
+```
+
+Logs are kept under `runtime-logs/`.
+Ctrl+C stops the four processes. The launcher runs in the foreground and does not survive an SSH
+logout; use a service manager for unattended operation. It assumes PostgreSQL migrations were
+applied by `./install.sh`.
