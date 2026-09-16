@@ -5,12 +5,14 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from aiogram.exceptions import TelegramForbiddenError
-from aiogram.methods import SendMessage
+from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
+from aiogram.methods import DeleteWebhook, SendMessage
+from aiogram.types import BotCommand
 
 from app.config import Settings
 from app.models import PatternType
 from app.schemas import GenerationJobRead
+from app.telegram_bot import __main__ as telegram_main
 from app.telegram_bot import api_client as api_client_module
 from app.telegram_bot.api_client import TronForgeApiClient
 from app.telegram_bot.handlers import create_router, wallet_commands_allowed
@@ -21,6 +23,42 @@ from app.telegram_bot.validation import (
     validate_custom_prefix,
     validate_suffix,
 )
+
+
+@pytest.mark.anyio
+async def test_telegram_startup_retries_transient_network_errors(monkeypatch) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    class FakeBot:
+        def __init__(self) -> None:
+            self.delete_attempts = 0
+            self.commands_set = 0
+
+        async def delete_webhook(self, *, drop_pending_updates: bool) -> None:
+            assert drop_pending_updates is False
+            self.delete_attempts += 1
+            if self.delete_attempts <= 2:
+                raise TelegramNetworkError(
+                    DeleteWebhook(drop_pending_updates=False), "temporary outage"
+                )
+
+        async def set_my_commands(self, commands: list[BotCommand]) -> None:
+            assert [command.command for command in commands] == [
+                "start",
+                "cancel",
+            ]
+            self.commands_set += 1
+
+    monkeypatch.setattr(telegram_main.asyncio, "sleep", fake_sleep)
+    bot = FakeBot()
+    await telegram_main.initialize_telegram(bot)  # type: ignore[arg-type]
+
+    assert bot.delete_attempts == 3
+    assert bot.commands_set == 1
+    assert sleeps == [2.0, 4.0]
 
 
 def test_telegram_pattern_validation_skips_fixed_t() -> None:
