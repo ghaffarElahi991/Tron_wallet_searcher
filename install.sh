@@ -506,19 +506,52 @@ if ! cmake_is_supported; then
   cmake_is_supported || fail "CMake >=3.24 is still unavailable."
 fi
 
+available_cpu_cores="$(nproc)"
+[[ "$available_cpu_cores" =~ ^[1-9][0-9]*$ ]] || \
+  fail "Could not determine the number of available CPU cores."
+build_parallel_jobs=$(( available_cpu_cores * 80 / 100 ))
+if (( build_parallel_jobs < 1 )); then build_parallel_jobs=1; fi
+printf 'CMake build jobs: up to %s for %s available CPU cores (about 80%%).\n' \
+  "$build_parallel_jobs" "$available_cpu_cores"
+
 step "Build and self-test CPU native reference"
 cmake -S "$NATIVE_DIR" -B "${NATIVE_DIR}/build" \
   -DCMAKE_BUILD_TYPE=Release -DTRONFORGE_ENABLE_CUDA=OFF
-cmake --build "${NATIVE_DIR}/build" --parallel
+cmake --build "${NATIVE_DIR}/build" --parallel "$build_parallel_jobs"
 ctest --test-dir "${NATIVE_DIR}/build" --output-on-failure
 
 if [[ "$CUDA_READY" -eq 1 ]]; then
   step "Build and self-test CUDA wallet generator"
+  cuda_cmake_flags=()
+  cuda_help="$("$CUDA_COMPILER" --help)"
+  if [[ "$cuda_help" == *"--split-compile"* ]]; then
+    cuda_compile_threads="${TRONFORGE_CUDA_COMPILE_THREADS:-$build_parallel_jobs}"
+    [[ "$cuda_compile_threads" =~ ^[1-9][0-9]{0,4}$ ]] || \
+      fail "TRONFORGE_CUDA_COMPILE_THREADS must be a positive integer (up to 99999)."
+    if (( cuda_compile_threads > available_cpu_cores )); then
+      cuda_compile_threads="$available_cpu_cores"
+    fi
+    if (( cuda_compile_threads > 1 )); then
+      cuda_compile_flags="--split-compile=${cuda_compile_threads}"
+      ptxas_path="${CUDA_COMPILER%/*}/ptxas"
+      if [[ -x "$ptxas_path" ]]; then
+        ptxas_help="$("$ptxas_path" --help 2>/dev/null || true)"
+        if [[ "$ptxas_help" == *"--split-compile"* ]]; then
+          cuda_compile_flags+=" -Xptxas=--split-compile=${cuda_compile_threads}"
+        fi
+      fi
+      cuda_cmake_flags=("-DCMAKE_CUDA_FLAGS=${cuda_compile_flags}")
+      printf 'CUDA compiler split compilation: up to %s of %s available CPU threads\n' \
+        "$cuda_compile_threads" "$available_cpu_cores"
+    fi
+  else
+    printf 'CUDA compiler does not support split compilation; using standard build flags.\n'
+  fi
   cmake --fresh -S "$NATIVE_DIR" -B "${NATIVE_DIR}/build-cuda" \
     -DCMAKE_BUILD_TYPE=Release -DTRONFORGE_REQUIRE_CUDA=ON \
     -DCMAKE_CUDA_COMPILER="$CUDA_COMPILER" \
-    -DCMAKE_CUDA_ARCHITECTURES=native
-  cmake --build "${NATIVE_DIR}/build-cuda" --parallel
+    -DCMAKE_CUDA_ARCHITECTURES=native "${cuda_cmake_flags[@]}"
+  cmake --build "${NATIVE_DIR}/build-cuda" --parallel "$build_parallel_jobs"
   ctest --test-dir "${NATIVE_DIR}/build-cuda" --output-on-failure
   gpu_info="$("${NATIVE_DIR}/build-cuda/tronforge-generator" gpu-info)"
   gpu_indices="$(printf '%s\n' "$gpu_info" | "$VENV_PYTHON" -c '

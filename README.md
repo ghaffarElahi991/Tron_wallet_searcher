@@ -26,6 +26,16 @@ Secure Boot enrollment; the installer never reboots automatically. A machine wit
 hardware cannot perform real GPU generation. For reference-only setup, run `./install.sh --cpu-only`.
 That mode builds the CPU CLI but cannot run the CUDA scheduler in `./run.sh`.
 
+For CUDA toolkits that support it, the installer enables bounded split compilation for the CUDA
+source and `ptxas`. By default, both the CMake build-job limit and CUDA split-thread limit are
+80% of the CPU cores available to the installer, rounded down (at least one). Set
+`TRONFORGE_CUDA_COMPILE_THREADS=16 ./install.sh` to override only the split-thread limit; it is
+capped at the available core count, and `1` disables split compilation. These are concurrency
+limits, not a hard CPU-utilization cap: simultaneous C++ jobs can briefly exceed the 80% target,
+and some compiler phases may use fewer cores. Split compilation can shorten some build phases but
+does not change wallet-search speed by itself. The installer still runs the native and per-GPU
+self-tests after building.
+
 The installer keeps an existing `backend/.env` and database credentials
 untouched. When the configured URL names the local `tronforge` PostgreSQL role/database, it creates
 those targets only if they are missing. On a fresh machine without `backend/.env`, it creates that
