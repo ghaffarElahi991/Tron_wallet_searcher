@@ -435,34 +435,62 @@ if local_target:
         )
         return result.stdout.strip()
 
+    def postgres_execute(statement: str) -> None:
+        try:
+            subprocess.run(
+                [
+                    *postgres_runner,
+                    "psql",
+                    "-X",
+                    "-q",
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-d",
+                    "postgres",
+                ],
+                input=statement + "\n",
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd="/tmp",
+            )
+        except subprocess.CalledProcessError as exc:
+            raise SystemExit("Could not provision the local tronforge PostgreSQL role.") from exc
+
     if postgres_query("SHOW port") != "5432":
         raise SystemExit("Local PostgreSQL is not using port 5432; no role or database was changed.")
     role_exists = postgres_query("SELECT 1 FROM pg_roles WHERE rolname = 'tronforge'") == "1"
     db_exists = postgres_query("SELECT 1 FROM pg_database WHERE datname = 'tronforge'") == "1"
     if db_exists and not role_exists:
         raise SystemExit("A tronforge database already exists without its role; no changes made.")
+    password_literal = "'" + url.password.replace("'", "''") + "'"
     if role_exists:
+        check_db = "tronforge" if db_exists else "postgres"
+        check_dsn = url.set(drivername="postgresql", database=check_db).render_as_string(
+            hide_password=False
+        )
         try:
-            check_db = "tronforge" if db_exists else "postgres"
-            check_dsn = url.set(drivername="postgresql", database=check_db).render_as_string(
-                hide_password=False
-            )
             with psycopg.connect(check_dsn, connect_timeout=5):
                 pass
         except psycopg.Error as exc:
-            raise SystemExit(
-                "Existing tronforge role has a different password; edit backend/.env instead of resetting it."
-            ) from exc
+            authentication_failed = exc.sqlstate == "28P01" or (
+                "password authentication failed" in str(exc).lower()
+            )
+            if not authentication_failed:
+                raise SystemExit(
+                    "Cannot verify the existing local tronforge role; its password was not changed."
+                ) from exc
+            postgres_execute(f"ALTER ROLE tronforge WITH PASSWORD {password_literal};")
+            try:
+                with psycopg.connect(check_dsn, connect_timeout=5):
+                    pass
+            except psycopg.Error as retry_exc:
+                raise SystemExit(
+                    "The local tronforge password was synchronized, but login verification failed."
+                ) from retry_exc
+            print("Synchronized the local tronforge role password with backend/.env.")
     else:
-        password_literal = "'" + url.password.replace("'", "''") + "'"
-        subprocess.run(
-            [*postgres_runner, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", "postgres"],
-            input=f"CREATE ROLE tronforge LOGIN PASSWORD {password_literal};\n",
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd="/tmp",
-        )
+        postgres_execute(f"CREATE ROLE tronforge LOGIN PASSWORD {password_literal};")
     if not db_exists:
         subprocess.run(
             [*postgres_runner, "createdb", "-O", "tronforge", "tronforge"],
@@ -476,7 +504,7 @@ try:
     with psycopg.connect(dsn, connect_timeout=5) as db:
         db.execute("SELECT 1")
 except psycopg.Error as exc:
-    raise SystemExit("Cannot connect using backend/.env; database and credentials were preserved.") from exc
+    raise SystemExit("Cannot connect using backend/.env after PostgreSQL provisioning.") from exc
 print("PostgreSQL connection verified.")
 PY
 )

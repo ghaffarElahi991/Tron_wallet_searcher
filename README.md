@@ -33,11 +33,13 @@ Blackwell server it produced a binary that failed the four-limb secp256k1 self-t
 still runs the native and per-GPU cryptographic self-tests after building, and `run.sh` repeats those
 GPU checks before starting services.
 
-The installer keeps an existing `backend/.env` and database credentials
-untouched. When the configured URL names the local `tronforge` PostgreSQL role/database, it creates
-those targets only if they are missing. On a fresh machine without `backend/.env`, it creates that
-file with random secrets. It never starts the API, generator,
-frontend, or Telegram bot automatically; see [backend setup](backend/README.md) and
+The installer preserves an existing `backend/.env`. When its database URL identifies exactly the
+local `localhost:5432` database and role named `tronforge`, the installer creates missing targets
+and synchronizes an existing role's password with the private password in `backend/.env` if login
+fails because the passwords differ. It never changes roles or credentials for external database
+URLs. On a fresh machine without `backend/.env`, it creates that file with random secrets. It never
+starts the API, generator, frontend, or Telegram bot automatically; see
+[backend setup](backend/README.md) and
 [frontend setup](frontend/README.md) for run commands. Review the generated admin password in
 `backend/.env` before signing in, and keep that file private.
 Files created by a root-run installation will be owned by root.
