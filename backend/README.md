@@ -61,6 +61,16 @@ its existing bearer-token reauthentication and does not receive a browser cookie
 serve the web UI and API on same-site HTTPS origins and list the web origin in
 `TRONFORGE_CORS_ORIGINS` so the Secure, SameSite cookie can be sent.
 
+If the local PostgreSQL password, role, database ownership, or schema access is out of sync with
+`backend/.env`, stop the stack and run this from the repository root:
+
+```bash
+./install.sh --database-only
+```
+
+The repair preserves the existing environment file, synchronizes the local `tronforge` role,
+verifies login and permissions, and applies all migrations.
+
 For a no-watcher run, omit `--reload`.
 
 In a second terminal, start two simulated GPU workers:

@@ -15,6 +15,7 @@ CUDA_TEMP_DIR=""
 CUDA_COMPILER=""
 CPU_ONLY=0
 INSTALL_DRIVER=0
+DATABASE_ONLY=0
 
 step() { printf '\n==> %s\n' "$1"; }
 fail() { printf 'Installer error: %s\n' "$1" >&2; exit 1; }
@@ -34,6 +35,152 @@ run_as_postgres() {
       sudo -u postgres -- "$@"
     fi
   )
+}
+
+ensure_postgresql_running() {
+  command -v psql >/dev/null 2>&1 || fail "psql is missing; run the full installer first."
+  command -v pg_isready >/dev/null 2>&1 || fail "pg_isready is missing; run the full installer first."
+  if [[ "$PACKAGE_MANAGER" == "dnf" ]] && ! pg_isready -q; then
+    if [[ ! -f /var/lib/pgsql/data/PG_VERSION ]]; then
+      [[ ! -d /var/lib/pgsql/data || -z "$(ls -A /var/lib/pgsql/data)" ]] || \
+        fail "PostgreSQL data directory is nonempty but has no PG_VERSION; initialize it manually."
+      command -v postgresql-setup >/dev/null 2>&1 || \
+        fail "postgresql-setup is missing; initialize PostgreSQL manually."
+      run_as_root postgresql-setup --initdb
+    fi
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    run_as_root systemctl enable --now postgresql || run_as_root service postgresql start
+  elif command -v service >/dev/null 2>&1; then
+    run_as_root service postgresql start
+  else
+    fail "No supported PostgreSQL service manager was found; start PostgreSQL manually."
+  fi
+  pg_isready -q -h localhost -p 5432 || \
+    fail "PostgreSQL is not accepting connections on localhost:5432."
+}
+
+provision_database() {
+  local fresh_env="$1"
+  step "Provision or repair PostgreSQL role, database, and schema"
+  (cd "$BACKEND_DIR" && "$VENV_PYTHON" - "$fresh_env" "$EUID" <<'PY'
+import subprocess
+import sys
+
+import psycopg
+from psycopg import sql
+from sqlalchemy.engine import make_url
+
+from app.config import get_settings
+
+fresh_env = sys.argv[1] == "1"
+postgres_runner = ["runuser", "-u", "postgres", "--"] if sys.argv[2] == "0" else [
+    "sudo", "-u", "postgres", "--"
+]
+url = make_url(get_settings().database_url)
+if url.drivername != "postgresql+psycopg":
+    raise SystemExit("Installer requires a postgresql+psycopg database URL in backend/.env.")
+if not all((url.host, url.database, url.username, url.password)):
+    raise SystemExit("Database URL in backend/.env is incomplete.")
+
+dsn = url.set(drivername="postgresql").render_as_string(hide_password=False)
+local_hosts = {"localhost", "127.0.0.1", "::1"}
+local_target = (
+    url.host in local_hosts
+    and (url.port or 5432) == 5432
+    and url.username == "tronforge"
+    and url.database == "tronforge"
+)
+if fresh_env and not local_target:
+    raise SystemExit("New installation can auto-provision only the local tronforge database.")
+
+
+def postgres_query(statement: str, *, database: str = "postgres") -> str:
+    result = subprocess.run(
+        [*postgres_runner, "psql", "-X", "-At", "-d", database, "-c", statement],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd="/tmp",
+    )
+    return result.stdout.strip()
+
+
+def postgres_execute(statement: str, *, database: str = "postgres") -> None:
+    try:
+        subprocess.run(
+            [
+                *postgres_runner,
+                "psql",
+                "-X",
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-d",
+                database,
+            ],
+            input=statement + "\n",
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd="/tmp",
+        )
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or "PostgreSQL command failed.").strip()
+        raise SystemExit(f"Could not provision the local tronforge database: {details}") from exc
+
+
+if local_target:
+    if postgres_query("SHOW port") != "5432":
+        raise SystemExit("Local PostgreSQL is not using port 5432; no role or database was changed.")
+
+    role_exists = postgres_query("SELECT 1 FROM pg_roles WHERE rolname = 'tronforge'") == "1"
+    password_literal = sql.Literal(url.password).as_string()
+    role_options = (
+        "LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+        "NOREPLICATION NOBYPASSRLS PASSWORD " + password_literal
+    )
+    if role_exists:
+        postgres_execute(f"ALTER ROLE tronforge WITH {role_options};")
+        print("Synchronized the local tronforge role with backend/.env.")
+    else:
+        postgres_execute(f"CREATE ROLE tronforge WITH {role_options};")
+        print("Created the local tronforge login role.")
+
+    db_exists = postgres_query("SELECT 1 FROM pg_database WHERE datname = 'tronforge'") == "1"
+    if db_exists:
+        postgres_execute("ALTER DATABASE tronforge OWNER TO tronforge;")
+        print("Verified ownership of the existing tronforge database.")
+    else:
+        postgres_execute("CREATE DATABASE tronforge OWNER tronforge;")
+        print("Created the local tronforge database.")
+
+    postgres_execute(
+        "ALTER SCHEMA public OWNER TO tronforge; "
+        "GRANT ALL ON SCHEMA public TO tronforge; "
+        "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO tronforge; "
+        "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO tronforge;",
+        database="tronforge",
+    )
+
+try:
+    with psycopg.connect(dsn, connect_timeout=5) as db:
+        current_user, current_database, can_create = db.execute(
+            "SELECT current_user, current_database(), "
+            "has_schema_privilege(current_user, 'public', 'CREATE')"
+        ).fetchone()
+        if current_user != url.username or current_database != url.database or not can_create:
+            raise SystemExit("Database login succeeded but role/database/schema ownership is invalid.")
+except psycopg.Error as exc:
+    raise SystemExit(
+        "Cannot connect using backend/.env after PostgreSQL provisioning."
+    ) from exc
+print("PostgreSQL password, ownership, and schema access verified.")
+PY
+  )
+
+  step "Apply PostgreSQL migrations"
+  (cd "$BACKEND_DIR" && "${BACKEND_DIR}/.venv/bin/alembic" upgrade head)
 }
 cleanup() {
   if [[ -n "$NODE_TEMP_DIR" && -d "$NODE_TEMP_DIR" ]]; then
@@ -104,14 +251,15 @@ find_cuda_compiler() {
 }
 
 case "${1:-}" in
-  "") [[ $# -eq 0 ]] || fail "Usage: ./install.sh [--check|--cpu-only|--install-driver]" ;;
-  --check|--cpu-only|--install-driver)
-    [[ $# -eq 1 ]] || fail "Usage: ./install.sh [--check|--cpu-only|--install-driver]"
+  "") [[ $# -eq 0 ]] || fail "Usage: ./install.sh [--check|--cpu-only|--install-driver|--database-only]" ;;
+  --check|--cpu-only|--install-driver|--database-only)
+    [[ $# -eq 1 ]] || fail "Usage: ./install.sh [--check|--cpu-only|--install-driver|--database-only]"
     ;;
-  *) fail "Usage: ./install.sh [--check|--cpu-only|--install-driver]" ;;
+  *) fail "Usage: ./install.sh [--check|--cpu-only|--install-driver|--database-only]" ;;
 esac
 [[ "${1:-}" == "--cpu-only" ]] && CPU_ONLY=1
 [[ "${1:-}" == "--install-driver" ]] && INSTALL_DRIVER=1
+[[ "${1:-}" == "--database-only" ]] && DATABASE_ONLY=1
 
 if [[ "${1:-}" == "--check" && $# -eq 1 ]]; then
   step "Read-only prerequisite check"
@@ -157,6 +305,18 @@ fi
 if [[ "$EUID" -ne 0 ]]; then
   command -v sudo >/dev/null 2>&1 || fail "sudo is required when running as a normal user."
   sudo -v
+fi
+
+if [[ "$DATABASE_ONLY" -eq 1 ]]; then
+  [[ -f "${BACKEND_DIR}/.env" ]] || fail "backend/.env is missing; run the full installer first."
+  [[ -x "$VENV_PYTHON" ]] || fail "backend/.venv is incomplete; run the full installer first."
+  [[ -x "${BACKEND_DIR}/.venv/bin/alembic" ]] || \
+    fail "Alembic is missing from backend/.venv; run the full installer first."
+  ensure_postgresql_running
+  provision_database 0
+  step "Database repair complete"
+  printf 'The tronforge role, password, database ownership, schema access, and migrations are ready.\n'
+  exit 0
 fi
 
 if [[ "$CPU_ONLY" -eq 0 ]] && ! nvidia_gpu_visible; then
@@ -251,24 +411,7 @@ if [[ -n "$CUDA_REPO_CODE" ]]; then
   fi
   find_cuda_compiler || fail "CUDA toolkit package installed but nvcc was not found under /usr/local/cuda*/bin."
 fi
-if [[ "$PACKAGE_MANAGER" == "dnf" ]] && ! pg_isready -q; then
-  if [[ ! -f /var/lib/pgsql/data/PG_VERSION ]]; then
-    [[ ! -d /var/lib/pgsql/data || -z "$(ls -A /var/lib/pgsql/data)" ]] || \
-      fail "PostgreSQL data directory is nonempty but has no PG_VERSION; initialize it manually."
-    command -v postgresql-setup >/dev/null 2>&1 || \
-      fail "postgresql-setup is missing; initialize PostgreSQL manually."
-    run_as_root postgresql-setup --initdb
-  fi
-fi
-if command -v systemctl >/dev/null 2>&1; then
-  run_as_root systemctl enable --now postgresql || run_as_root service postgresql start
-else
-  if command -v service >/dev/null 2>&1; then
-    run_as_root service postgresql start
-  else
-    fail "No supported PostgreSQL service manager was found; start PostgreSQL manually."
-  fi
-fi
+ensure_postgresql_running
 node_is_supported() {
   command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && \
     node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && minor >= 9) ? 0 : 1)'
@@ -396,121 +539,7 @@ print("Created backend/.env with new random credentials (values not displayed)."
 PY
 fi
 
-step "Provision or verify PostgreSQL connection"
-(cd "$BACKEND_DIR" && "$VENV_PYTHON" - "$NEW_ENV" "$EUID" <<'PY'
-import subprocess
-import sys
-
-import psycopg
-from sqlalchemy.engine import make_url
-
-from app.config import get_settings
-
-fresh_env = sys.argv[1] == "1"
-postgres_runner = ["runuser", "-u", "postgres", "--"] if sys.argv[2] == "0" else [
-    "sudo", "-u", "postgres", "--"
-]
-url = make_url(get_settings().database_url)
-if url.drivername != "postgresql+psycopg":
-    raise SystemExit("Installer requires a postgresql+psycopg database URL in backend/.env.")
-if not all((url.host, url.database, url.username, url.password)):
-    raise SystemExit("Database URL in backend/.env is incomplete.")
-
-dsn = url.set(drivername="postgresql").render_as_string(hide_password=False)
-
-local_target = (url.host, url.port or 5432, url.username, url.database) == (
-    "localhost", 5432, "tronforge", "tronforge"
-)
-if fresh_env and not local_target:
-    raise SystemExit("New installation can auto-provision only the local tronforge database.")
-
-if local_target:
-    def postgres_query(statement: str) -> str:
-        result = subprocess.run(
-            [*postgres_runner, "psql", "-X", "-At", "-d", "postgres", "-c", statement],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd="/tmp",
-        )
-        return result.stdout.strip()
-
-    def postgres_execute(statement: str) -> None:
-        try:
-            subprocess.run(
-                [
-                    *postgres_runner,
-                    "psql",
-                    "-X",
-                    "-q",
-                    "-v",
-                    "ON_ERROR_STOP=1",
-                    "-d",
-                    "postgres",
-                ],
-                input=statement + "\n",
-                capture_output=True,
-                text=True,
-                check=True,
-                cwd="/tmp",
-            )
-        except subprocess.CalledProcessError as exc:
-            raise SystemExit("Could not provision the local tronforge PostgreSQL role.") from exc
-
-    if postgres_query("SHOW port") != "5432":
-        raise SystemExit("Local PostgreSQL is not using port 5432; no role or database was changed.")
-    role_exists = postgres_query("SELECT 1 FROM pg_roles WHERE rolname = 'tronforge'") == "1"
-    db_exists = postgres_query("SELECT 1 FROM pg_database WHERE datname = 'tronforge'") == "1"
-    if db_exists and not role_exists:
-        raise SystemExit("A tronforge database already exists without its role; no changes made.")
-    password_literal = "'" + url.password.replace("'", "''") + "'"
-    if role_exists:
-        check_db = "tronforge" if db_exists else "postgres"
-        check_dsn = url.set(drivername="postgresql", database=check_db).render_as_string(
-            hide_password=False
-        )
-        try:
-            with psycopg.connect(check_dsn, connect_timeout=5):
-                pass
-        except psycopg.Error as exc:
-            authentication_failed = exc.sqlstate == "28P01" or (
-                "password authentication failed" in str(exc).lower()
-            )
-            if not authentication_failed:
-                raise SystemExit(
-                    "Cannot verify the existing local tronforge role; its password was not changed."
-                ) from exc
-            postgres_execute(f"ALTER ROLE tronforge WITH PASSWORD {password_literal};")
-            try:
-                with psycopg.connect(check_dsn, connect_timeout=5):
-                    pass
-            except psycopg.Error as retry_exc:
-                raise SystemExit(
-                    "The local tronforge password was synchronized, but login verification failed."
-                ) from retry_exc
-            print("Synchronized the local tronforge role password with backend/.env.")
-    else:
-        postgres_execute(f"CREATE ROLE tronforge LOGIN PASSWORD {password_literal};")
-    if not db_exists:
-        subprocess.run(
-            [*postgres_runner, "createdb", "-O", "tronforge", "tronforge"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd="/tmp",
-        )
-
-try:
-    with psycopg.connect(dsn, connect_timeout=5) as db:
-        db.execute("SELECT 1")
-except psycopg.Error as exc:
-    raise SystemExit("Cannot connect using backend/.env after PostgreSQL provisioning.") from exc
-print("PostgreSQL connection verified.")
-PY
-)
-
-step "Apply PostgreSQL migrations"
-(cd "$BACKEND_DIR" && "${BACKEND_DIR}/.venv/bin/alembic" upgrade head)
+provision_database "$NEW_ENV"
 
 step "Install locked Next.js dependencies"
 (cd "$FRONTEND_DIR" && npm ci --no-audit --no-fund)

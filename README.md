@@ -34,15 +34,26 @@ still runs the native and per-GPU cryptographic self-tests after building, and `
 GPU checks before starting services.
 
 The installer preserves an existing `backend/.env`. When its database URL identifies exactly the
-local `localhost:5432` database and role named `tronforge`, the installer creates missing targets
-and synchronizes an existing role's password with the private password in `backend/.env` if login
-fails because the passwords differ. It never changes roles or credentials for external database
-URLs. On a fresh machine without `backend/.env`, it creates that file with random secrets. It never
-starts the API, generator, frontend, or Telegram bot automatically; see
+local `tronforge` database and role on `localhost`, `127.0.0.1`, or `::1`, the installer creates
+missing targets, synchronizes the role password with `backend/.env`, restores database ownership
+and schema access, verifies a TCP login, and applies migrations. It never changes roles or
+credentials for external database URLs. On a fresh machine without `backend/.env`, it creates that
+file with random secrets. It never starts the API, generator, frontend, or Telegram bot
+automatically; see
 [backend setup](backend/README.md) and
 [frontend setup](frontend/README.md) for run commands. Review the generated admin password in
 `backend/.env` before signing in, and keep that file private.
 Files created by a root-run installation will be owned by root.
+
+If an existing server reports `password authentication failed for user "tronforge"`, stop the stack
+and run this focused repair from the repository root:
+
+```bash
+./install.sh --database-only
+```
+
+This preserves `backend/.env` and does not reinstall CUDA, rebuild the native generator, or
+reinstall frontend dependencies.
 
 ## Start the complete local stack
 
