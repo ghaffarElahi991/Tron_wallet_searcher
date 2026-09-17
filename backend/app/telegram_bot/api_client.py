@@ -7,7 +7,14 @@ import httpx
 
 from app.config import Settings
 from app.models import PatternType
-from app.schemas import GenerationJobRead, GpuFleetRead, JobListResponse, TokenResponse
+from app.schemas import (
+    FundingCreate,
+    FundingRead,
+    GenerationJobRead,
+    GpuFleetRead,
+    JobListResponse,
+    TokenResponse,
+)
 
 
 class TronForgeApiError(RuntimeError):
@@ -146,3 +153,17 @@ class TronForgeApiClient:
     async def get_gpu_fleet(self) -> GpuFleetRead:
         response = await self.request("GET", "gpus")
         return GpuFleetRead.model_validate(response.json())
+
+    async def create_funding(self, job_id: uuid.UUID, amount: str) -> FundingRead:
+        validated = FundingCreate(amount=amount)
+        response = await self.request(
+            "POST",
+            f"jobs/{job_id}/funding",
+            json_body={"amount": str(validated.amount)},
+            headers={"Idempotency-Key": f"telegram-funding-{job_id}"},
+        )
+        return FundingRead.model_validate(response.json())
+
+    async def get_funding(self, job_id: uuid.UUID) -> FundingRead:
+        response = await self.request("GET", f"jobs/{job_id}/funding")
+        return FundingRead.model_validate(response.json())

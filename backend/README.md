@@ -16,6 +16,8 @@ FastAPI control plane for authenticated, on-demand TRON vanity-wallet generation
 - Worker-authenticated candidate submission
 - Independent secp256k1, Keccak-256, Base58Check, and pattern verification
 - Encrypted server wallet seeds, GPU offsets, and completed private keys at rest
+- Idempotent USDT funding requests with encrypted signed-payload persistence
+- Separate simulator/live funding processor with solidified-receipt verification
 - PostgreSQL migrations and local Docker Compose environment
 
 The API is the wallet custodian in this single-operator architecture. It generates an encrypted base
@@ -107,6 +109,47 @@ the completed-job average. The web UI and Telegram progress message use their ex
 show this value; displaying it adds no CUDA launches, worker messages, database columns, or polling
 frequency. It is a job-level average across all assigned GPUs, not the GPU kernel's warm-batch rate.
 
+## USDT funding
+
+Funding is disabled by default. The API persists one funding request per verified wallet and accepts
+only amounts from 1 through 1,500 USDT with at most six decimal places. A separate processor prepares
+and signs the transaction, stores its exact signed payload encrypted before broadcast, and reconciles
+the same transaction ID after timeouts. It never creates a replacement for an uncertain broadcast.
+
+Exercise the complete state machine without moving funds:
+
+```dotenv
+TRONFORGE_FUNDING_MODE=simulator
+TRONFORGE_FUNDING_NETWORK=nile
+```
+
+For live testnet use, configure a deployed six-decimal test TRC-20 contract, node endpoint and a
+dedicated test wallet. Prefer a root-readable `0600` key file over an inline environment secret:
+
+```dotenv
+TRONFORGE_FUNDING_MODE=live
+TRONFORGE_FUNDING_NETWORK=nile
+TRONFORGE_FUNDING_CONTRACT_ADDRESS=replace-with-test-token-contract
+TRONFORGE_FUNDING_NODE_URL=https://nile.trongrid.io
+TRONFORGE_FUNDING_NODE_API_KEY=replace-with-provider-key
+TRONFORGE_FUNDING_MASTER_PRIVATE_KEY_FILE=/secure/tronforge-funding.key
+TRONFORGE_FUNDING_MASTER_ADDRESS=replace-with-derived-master-address
+TRONFORGE_FUNDING_MIN_AVAILABLE_ENERGY=65000
+TRONFORGE_FUNDING_MIN_AVAILABLE_BANDWIDTH=350
+TRONFORGE_FUNDING_DAILY_LIMIT_USDT=1500
+```
+
+Mainnet additionally requires `TRONFORGE_FUNDING_NETWORK=mainnet` and the explicit circuit breaker
+`TRONFORGE_FUNDING_ALLOW_MAINNET=true`. Mainnet is pinned to the configured official USDT contract.
+The funding wallet must hold enough USDT and TRON Energy/TRX for contract execution. A broadcast
+response is not treated as success: the processor waits for a solidified receipt containing the
+expected contract, destination and amount in its `Transfer` event.
+
+Run `alembic upgrade head` after updating, then start the stack with `./run.sh`. The launcher starts
+the funding processor whenever funding mode is `simulator` or `live`. Telegram funding also requires
+`TRONFORGE_TELEGRAM_FUNDING_ENABLED=true`; that option is rejected while public Telegram access is
+enabled so group members cannot spend from the master wallet.
+
 ## Telegram bot
 
 Create a bot with Telegram's `@BotFather`, then configure the bot token in `.env`:
@@ -117,6 +160,7 @@ TRONFORGE_TELEGRAM_ALLOWED_USER_ID=0
 TRONFORGE_TELEGRAM_RESTRICT_USER_ID=true
 TRONFORGE_TELEGRAM_ALLOWED_GROUP_ID=0
 TRONFORGE_TELEGRAM_PUBLIC_ACCESS=false
+TRONFORGE_TELEGRAM_FUNDING_ENABLED=false
 TRONFORGE_TELEGRAM_API_URL=http://127.0.0.1:8000/api/v1
 TRONFORGE_TELEGRAM_POLL_INTERVAL_SECONDS=3
 ```
@@ -155,8 +199,9 @@ stays in the group, but the verified address and private key are sent only to th
 by direct message. If that DM is unavailable, the group receives an instruction to start a private
 chat and use `Recent jobs → Reveal`; the key is never posted to the group. Any member of the
 allowlisted group can reveal any ready wallet to their own DM because the backend still uses one
-shared operator account. Sending a private key through Telegram is less secure than the
-password-encrypted web download; import it promptly, keep an offline backup, and delete the message.
+shared operator account. Sending a private key through Telegram or displaying it in a browser
+exposes sensitive wallet material; import it promptly, keep an offline backup, and remove any
+messages or screenshots.
 
 The bot does not have an idle login timeout. It signs in with the configured operator credentials
 before its short-lived API token expires, and reauthenticates once if an unexpected 401 occurs. A
@@ -219,4 +264,4 @@ CUDA candidate and derives its final private key before making the result visibl
 - Run migrations during deployment rather than creating tables automatically at application start.
 - Add production rate limiting at the ingress and application levels before exposing authentication.
 - The current owner API returns the decrypted result to the authenticated browser for local
-  verification and encryption. Replace this with a one-time delivery grant before public launch.
+  verification and direct display. Replace this with a one-time delivery grant before public launch.

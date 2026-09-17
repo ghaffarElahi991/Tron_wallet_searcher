@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the installed API, CUDA scheduler, Telegram bot, and watcher-free web UI.
+# Start the installed API, CUDA scheduler, optional funding processor, Telegram bot, and web UI.
 set -Eeuo pipefail
 umask 077
 
@@ -18,7 +18,7 @@ fail() { printf 'Launcher error: %s\n' "$1" >&2; exit 1; }
 shutdown() {
   trap - EXIT INT TERM
   if [[ ${#PIDS[@]} -eq 0 ]]; then return; fi
-  step "Stopping API, GPU scheduler, Telegram bot, and web UI"
+  step "Stopping TronForge services"
   for child_pid in "${PIDS[@]}"; do
     kill -TERM "$child_pid" 2>/dev/null || true
   done
@@ -54,6 +54,7 @@ command -v nvidia-smi >/dev/null 2>&1 || \
 
 step "Check API, Telegram, and CUDA configuration"
 (cd "$BACKEND_DIR" && "$VENV_PYTHON" - <<'PY'
+import errno
 import json
 import os
 import socket
@@ -105,22 +106,38 @@ for device in devices:
 
 for port in (8000, 3000):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        # Match the reuse behavior of Uvicorn/Next.js so recently closed
+        # connections in TIME_WAIT do not look like active listeners.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             listener.bind(("127.0.0.1", port))
         except OSError as exc:
-            raise SystemExit(f"Local port {port} is already in use; stop the existing service.") from exc
+            if exc.errno == errno.EADDRINUSE:
+                raise SystemExit(
+                    f"Local port {port} is already in use; stop the existing service."
+                ) from exc
+            raise SystemExit(f"Could not verify local port {port}: {exc}") from exc
 
 print(f"CUDA devices visible: {len(devices)}")
 print("CUDA cryptographic self-tests passed on every visible GPU.")
 print("API: 127.0.0.1:8000; web UI: 127.0.0.1:3000")
 if settings.telegram_public_access:
     print("WARNING: Telegram public access is enabled; group users may see wallet private keys.")
+print(f"Funding processor: {settings.funding_mode} ({settings.funding_network})")
 PY
 )
+
+FUNDING_MODE="$(cd "$BACKEND_DIR" && "$VENV_PYTHON" -c \
+  'from app.config import get_settings; print(get_settings().funding_mode)')"
 
 if [[ "${1:-}" == "--check" ]]; then
   printf 'Read-only launcher check passed.\n'
   exit 0
+fi
+
+step "Apply pending database migrations"
+if ! (cd "$BACKEND_DIR" && "${BACKEND_DIR}/.venv/bin/alembic" upgrade head); then
+  fail "Database migrations failed; verify PostgreSQL and backend/.env before starting."
 fi
 
 step "Build the Next.js web UI once (no file watcher)"
@@ -155,6 +172,14 @@ step "Start the CUDA generation scheduler"
 GENERATOR_PID=$!
 PIDS+=("$GENERATOR_PID")
 
+if [[ "$FUNDING_MODE" != "disabled" ]]; then
+  step "Start the USDT funding processor"
+  (cd "$BACKEND_DIR" && exec env PYTHONUNBUFFERED=1 "$VENV_PYTHON" -m app.funding) \
+    >"${LOG_DIR}/funding.log" 2>&1 &
+  FUNDING_PID=$!
+  PIDS+=("$FUNDING_PID")
+fi
+
 step "Start the Telegram bot"
 (cd "$BACKEND_DIR" && exec env PYTHONUNBUFFERED=1 "$VENV_PYTHON" -m app.telegram_bot) \
   >"${LOG_DIR}/telegram.log" 2>&1 &
@@ -182,9 +207,9 @@ for ((attempt = 0; attempt < 30; attempt++)); do
 done
 [[ "$web_ready" -eq 1 ]] || fail "Web UI did not become ready in 30 seconds; inspect ${LOG_DIR}/web.log."
 
-printf '\nStack is running. UI: http://localhost:3000  API: http://localhost:8000\n'
+printf '\nStack is running. UI: http://localhost:3000  API: proxied through /api/v1\n'
 printf 'Logs: %s\n' "$LOG_DIR"
-printf 'Press Ctrl+C to stop all four services.\n'
+printf 'Press Ctrl+C to stop all running services.\n'
 
 if wait -n "${PIDS[@]}"; then
   fail "One service stopped unexpectedly; inspect logs in ${LOG_DIR}."

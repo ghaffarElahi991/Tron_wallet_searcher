@@ -71,10 +71,6 @@ export const ActivityIcon = (props: IconProps) => (
   <IconBase {...props}><path d="M3 12h4l2-7 4 14 2-7h6"/></IconBase>
 );
 
-export const DownloadIcon = (props: IconProps) => (
-  <IconBase {...props}><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></IconBase>
-);
-
 export const ExternalIcon = (props: IconProps) => (
   <IconBase {...props}><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></IconBase>
 );

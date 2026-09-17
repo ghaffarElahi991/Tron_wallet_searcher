@@ -1,7 +1,9 @@
 import hashlib
+import ipaddress
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy import select
@@ -19,9 +21,30 @@ REFRESH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{64}$")
 
 def _check_origin(request: Request) -> bool:
     origin = request.headers.get("origin")
-    if origin is not None and origin not in get_settings().cors_origin_list:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origin not allowed.")
-    return origin is not None
+    if origin is None:
+        return False
+    if origin in get_settings().cors_origin_list:
+        return True
+
+    # The bundled Next.js server proxies browser requests over loopback. Validate
+    # both the direct peer and the original same-origin host before trusting it.
+    peer_host = request.client.host if request.client else ""
+    forwarded_host = request.headers.get("x-forwarded-host", "").split(",", 1)[0].strip()
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    try:
+        loopback_peer = ipaddress.ip_address(peer_host).is_loopback
+    except ValueError:
+        loopback_peer = False
+    parsed_origin = urlsplit(origin)
+    trusted_proxy = (
+        request.headers.get("x-tronforge-same-origin-proxy") == "1"
+        and loopback_peer
+        and parsed_origin.netloc == forwarded_host
+        and parsed_origin.scheme == forwarded_proto
+    )
+    if trusted_proxy:
+        return True
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origin not allowed.")
 
 
 def _refresh_hash(token: str) -> str | None:

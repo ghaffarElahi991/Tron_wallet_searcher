@@ -1,7 +1,7 @@
 from html import escape
 
-from app.models import JobStatus
-from app.schemas import GenerationJobRead, GpuFleetRead
+from app.models import FundingStatus, JobStatus
+from app.schemas import FundingRead, GenerationJobRead, GpuFleetRead
 
 
 def format_count(value: int) -> str:
@@ -86,6 +86,38 @@ def gpu_fleet_message(fleet: GpuFleetRead) -> str:
                 f"GPU {device.device_index}: <b>{escape(device.name)}</b>",
                 f"Status: {escape(device.status.value)} · "
                 f"benchmark {format_count(device.benchmark_rate)}/s",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def funding_progress(funding: FundingRead) -> str:
+    labels = {
+        FundingStatus.REQUESTED: "Queued",
+        FundingStatus.PREPARING: "Preparing transaction",
+        FundingStatus.SIGNED: "Signed securely",
+        FundingStatus.BROADCAST: "Waiting for solidification",
+        FundingStatus.CONFIRMED: "Confirmed",
+        FundingStatus.FAILED: "Failed",
+        FundingStatus.UNKNOWN: "Reconciling uncertain broadcast",
+    }
+    lines = [
+        "<b>TRON USDT funding</b>",
+        "",
+        f"Status: <b>{labels[funding.status]}</b>",
+        f"Amount: <b>{escape(funding.amount_usdt)} USDT</b>",
+        f"Destination: <code>{escape(funding.destination_address)}</code>",
+        f"Network: <b>{escape(funding.network.upper())}</b>",
+    ]
+    if funding.txid:
+        lines.extend(["", f"Transaction: <code>{escape(funding.txid)}</code>"])
+    if funding.failure_message:
+        lines.extend(["", f"Detail: {escape(funding.failure_message)}"])
+    if funding.status == FundingStatus.UNKNOWN:
+        lines.extend(
+            [
+                "",
+                "The original transaction is still being reconciled. Do not create a replacement.",
             ]
         )
     return "\n".join(lines)

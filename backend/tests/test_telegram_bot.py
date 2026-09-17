@@ -15,7 +15,11 @@ from app.schemas import GenerationJobRead
 from app.telegram_bot import __main__ as telegram_main
 from app.telegram_bot import api_client as api_client_module
 from app.telegram_bot.api_client import TronForgeApiClient
-from app.telegram_bot.handlers import create_router, wallet_commands_allowed
+from app.telegram_bot.handlers import (
+    create_router,
+    telegram_funding_allowed,
+    wallet_commands_allowed,
+)
 from app.telegram_bot.messages import job_progress, wallet_result
 from app.telegram_bot.runtime import BotRuntime
 from app.telegram_bot.validation import (
@@ -296,6 +300,12 @@ def test_public_access_setting_is_read_from_env(monkeypatch) -> None:
     monkeypatch.setenv("TRONFORGE_TELEGRAM_PUBLIC_ACCESS", "true")
     settings = Settings(_env_file=None)
     assert settings.telegram_public_access is True
+
+
+def test_telegram_funding_is_limited_to_configured_operator() -> None:
+    assert telegram_funding_allowed(user_id=42, allowed_user_id=42)
+    assert not telegram_funding_allowed(user_id=43, allowed_user_id=42)
+    assert not telegram_funding_allowed(user_id=42, allowed_user_id=0)
 
 
 @pytest.mark.anyio

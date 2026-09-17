@@ -11,18 +11,22 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-The FastAPI service must be running at `http://localhost:8000`. To use another URL, copy the
-example environment file and change it before building:
+The FastAPI service must be running at `http://127.0.0.1:8000`. Browser requests use the
+same-origin `/api/v1` URL and Next.js proxies them to FastAPI, so the UI also works when opened
+through a server IP, domain, SSH tunnel, or HTTPS reverse proxy. To change the internal API URL,
+copy the example environment file before building:
 
 ```bash
 cp .env.local.example .env.local
 ```
 
-The backend must be migrated to the `0006_browser_sessions` revision before web login. The UI
+Set `TRONFORGE_INTERNAL_API_URL` to the address reachable by the Next.js server. Do not set
+`NEXT_PUBLIC_API_URL` to `localhost` for a remotely opened UI.
+
+The backend must be migrated to the latest Alembic revision before web login. The UI
 keeps its short-lived access token in memory and uses a rotating HttpOnly cookie to renew it in the
 background, including after a page reload. Log in once again after upgrading from the old
-session-storage login. Local development should use `localhost` for both apps, not a mix of
-`localhost` and `127.0.0.1`, so the browser cookie is sent correctly.
+session-storage login.
 
 `npm run dev` performs a one-time production build and then starts the app
 without a source-file watcher. This avoids Turbopack/inotify exhaustion on
@@ -46,16 +50,20 @@ npm run dev:watch
 - Live GPU-fleet status from the scheduler
 - Server-generated wallet seed encrypted at rest
 - Server-side result verification and final private-key assembly
-- Local result verification and AES-256-GCM wallet export
-- Funding amount validation and review
+- Local result verification with the address and private key displayed directly in the UI
+- Funding amount validation, persisted request submission, and live status polling
+- Confirmed transaction details and network-specific explorer links
 - Security model and help content
 
 ## Safety boundary
 
-Simulator workers exercise scheduling but intentionally never return a wallet. A real result requires
-the future CUDA executor. Funding remains a clearly labeled simulation because no funding API or
-TRON broadcaster has been implemented.
+Simulator GPU workers exercise scheduling but intentionally never return a wallet. CUDA mode is
+required for real wallet results. Funding is independently disabled by default; its simulator mode
+exercises the complete persisted funding workflow without moving tokens, while live mode is enabled
+only through protected backend configuration.
 
 The backend is the wallet custodian in this single-operator design. Protect its encryption key,
-database, host, and backups accordingly. Production cryptography and wallet export must receive an
-independent security audit before mainnet use.
+database, host, browser session, and backups accordingly. The UI deliberately displays the private
+key on screen, so use it only in a private environment and never expose it through screenshots,
+screen sharing, browser extensions, or logs. Production cryptography and custody boundaries must
+receive an independent security audit before mainnet use.

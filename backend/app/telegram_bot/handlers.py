@@ -1,5 +1,7 @@
+import re
 import uuid
 from collections.abc import Awaitable, Callable
+from decimal import Decimal, InvalidOperation
 from html import escape
 from typing import Any
 
@@ -14,10 +16,12 @@ from app.models import JobStatus, PatternType
 from app.telegram_bot.api_client import TronForgeApiError
 from app.telegram_bot.keyboards import (
     confirmation_menu,
+    funding_confirmation_menu,
     main_menu,
     pattern_label,
     pattern_menu,
     recent_jobs_menu,
+    wallet_result_menu,
 )
 from app.telegram_bot.messages import gpu_fleet_message, job_progress, wallet_result
 from app.telegram_bot.runtime import BotRuntime
@@ -32,6 +36,13 @@ class WalletForm(StatesGroup):
     prefix = State()
     suffix = State()
     confirmation = State()
+
+
+class FundingForm(StatesGroup):
+    amount = State()
+
+
+FUNDING_AMOUNT = re.compile(r"^\d+(?:\.\d{1,6})?$")
 
 
 def wallet_commands_allowed(
@@ -59,6 +70,10 @@ def wallet_commands_allowed(
         and allowed_group_id != 0
         and chat_id == allowed_group_id
     )
+
+
+def telegram_funding_allowed(*, user_id: int | None, allowed_user_id: int) -> bool:
+    return user_id is not None and allowed_user_id > 0 and user_id == allowed_user_id
 
 
 def _is_start_message(event: TelegramObject) -> bool:
@@ -149,6 +164,7 @@ def create_router(
     restrict_user_id: bool = True,
     allowed_group_id: int = 0,
     public_access: bool = False,
+    funding_enabled: bool = False,
 ) -> Router:
     router = Router(name="tronforge-operator")
     middleware = OperatorOnlyMiddleware(
@@ -374,6 +390,11 @@ def create_router(
                 buttons.append((job.id, str(job.id)[:8], "cancel"))
             elif job.status in {JobStatus.READY, JobStatus.OWNERSHIP_VERIFIED} and job.result:
                 buttons.append((job.id, str(job.id)[:8], "reveal"))
+                if funding_enabled and telegram_funding_allowed(
+                    user_id=callback.from_user.id,
+                    allowed_user_id=allowed_user_id,
+                ):
+                    buttons.append((job.id, str(job.id)[:8], "fund"))
         await callback.message.edit_text(
             "\n".join(lines), reply_markup=recent_jobs_menu(buttons)
         )
@@ -426,7 +447,20 @@ def create_router(
                 if public_access and callback.message is not None
                 else callback.from_user.id
             )
-            await callback.bot.send_message(result_chat_id, wallet_result(job))
+            result_menu = wallet_result_menu(
+                job.id,
+                funding_enabled=funding_enabled
+                and telegram_funding_allowed(
+                    user_id=callback.from_user.id,
+                    allowed_user_id=allowed_user_id,
+                ),
+            )
+            if result_menu is None:
+                await callback.bot.send_message(result_chat_id, wallet_result(job))
+            else:
+                await callback.bot.send_message(
+                    result_chat_id, wallet_result(job), reply_markup=result_menu
+                )
         except (TelegramForbiddenError, TelegramBadRequest):
             await callback.answer(
                 "Cannot send the wallet to this chat."
@@ -439,5 +473,115 @@ def create_router(
             await callback.answer(str(exc), show_alert=True)
             return
         await callback.answer("Wallet data sent.")
+
+    @router.callback_query(F.data.startswith("job:fund:"))
+    async def start_funding(callback: CallbackQuery, state: FSMContext) -> None:
+        if not funding_enabled or not telegram_funding_allowed(
+            user_id=callback.from_user.id,
+            allowed_user_id=allowed_user_id,
+        ):
+            await callback.answer(
+                "Only the configured funding operator can do that.", show_alert=True
+            )
+            return
+        if callback.message is None:
+            await callback.answer("Message is unavailable.", show_alert=True)
+            return
+        try:
+            job_id = uuid.UUID((callback.data or "").rsplit(":", 1)[1])
+        except ValueError:
+            await callback.answer("Invalid wallet job.", show_alert=True)
+            return
+        await state.clear()
+        await state.set_state(FundingForm.amount)
+        await state.update_data(funding_job_id=str(job_id))
+        await callback.message.answer(
+            "<b>Fund wallet</b>\n\nSend an amount from <b>1 to 1,500 USDT</b> "
+            "with no more than six decimal places.",
+            reply_markup=ForceReply(input_field_placeholder="USDT amount"),
+        )
+        await callback.answer()
+
+    @router.message(FundingForm.amount, F.text)
+    async def receive_funding_amount(message: Message, state: FSMContext) -> None:
+        raw = (message.text or "").strip()
+        try:
+            amount = Decimal(raw)
+        except InvalidOperation:
+            amount = Decimal(0)
+        if not FUNDING_AMOUNT.fullmatch(raw) or not Decimal("1") <= amount <= Decimal("1500"):
+            await message.answer(
+                "Invalid amount. Send a value between 1 and 1,500 with up to six decimals.",
+                reply_markup=ForceReply(input_field_placeholder="USDT amount"),
+            )
+            return
+        data = await state.get_data()
+        try:
+            job_id = uuid.UUID(str(data["funding_job_id"]))
+        except (KeyError, ValueError):
+            await state.clear()
+            await message.answer("The funding form expired. Open the wallet again.")
+            return
+        await state.update_data(funding_amount=raw)
+        await message.answer(
+            "<b>Confirm USDT funding</b>\n\n"
+            f"Amount: <b>{escape(raw)} USDT</b>\n"
+            f"Wallet job: <code>{str(job_id)[:8]}</code>\n\n"
+            "The request becomes irreversible after its signed transaction is broadcast.",
+            reply_markup=funding_confirmation_menu(job_id),
+        )
+
+    @router.callback_query(F.data == "funding:cancel")
+    async def cancel_funding(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        if callback.message is not None:
+            await callback.message.edit_text("Funding request canceled.", reply_markup=main_menu())
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("funding:confirm:"))
+    async def confirm_funding(
+        callback: CallbackQuery,
+        state: FSMContext,
+        runtime: BotRuntime,
+    ) -> None:
+        if (
+            not funding_enabled
+            or not telegram_funding_allowed(
+                user_id=callback.from_user.id,
+                allowed_user_id=allowed_user_id,
+            )
+            or callback.message is None
+        ):
+            await callback.answer(
+                "Only the configured funding operator can do that.", show_alert=True
+            )
+            return
+        data = await state.get_data()
+        try:
+            job_id = uuid.UUID((callback.data or "").rsplit(":", 1)[1])
+            if str(data["funding_job_id"]) != str(job_id):
+                raise ValueError
+            amount = str(data["funding_amount"])
+        except (KeyError, ValueError):
+            await state.clear()
+            await callback.answer("The funding form expired. Start again.", show_alert=True)
+            return
+        await callback.answer("Submitting funding request…")
+        try:
+            funding = await runtime.api.create_funding(job_id, amount)
+        except TronForgeApiError as exc:
+            await callback.message.edit_text(
+                f"Could not create funding request: {escape(str(exc))}",
+                reply_markup=main_menu(),
+            )
+            return
+        await state.clear()
+        progress = await callback.message.edit_text("Funding request created. Waiting for signer…")
+        runtime.monitor_funding(
+            callback.bot,
+            chat_id=progress.chat.id,
+            message_id=progress.message_id,
+            job_id=funding.job_id,
+        )
 
     return router

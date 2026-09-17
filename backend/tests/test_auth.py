@@ -121,6 +121,28 @@ async def test_browser_login_rejects_unapproved_origin(client: httpx.AsyncClient
     assert client.cookies.get("tronforge_refresh") is None
 
 
+async def test_browser_login_accepts_verified_local_frontend_proxy(
+    client: httpx.AsyncClient,
+) -> None:
+    settings = get_settings()
+    response = await client.post(
+        "/api/v1/auth/token",
+        json={
+            "username": settings.admin_username,
+            "password": settings.admin_password.get_secret_value(),
+        },
+        headers={
+            "Origin": "https://wallet.example.test",
+            "X-TronForge-Same-Origin-Proxy": "1",
+            "X-Forwarded-Host": "wallet.example.test",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+
+    assert response.status_code == 200
+    assert client.cookies.get("tronforge_refresh") is not None
+
+
 async def test_expired_access_token_can_be_replaced_from_browser_cookie(
     client: httpx.AsyncClient,
 ) -> None:

@@ -57,6 +57,8 @@ async def run() -> None:
         api,
         settings.telegram_poll_interval_seconds,
         broadcast_results_to_chat=settings.telegram_public_access,
+        funding_enabled=settings.telegram_funding_enabled,
+        funding_operator_user_id=settings.telegram_allowed_user_id,
     )
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(
@@ -65,6 +67,7 @@ async def run() -> None:
             restrict_user_id=settings.telegram_restrict_user_id,
             allowed_group_id=settings.telegram_allowed_group_id,
             public_access=settings.telegram_public_access,
+            funding_enabled=settings.telegram_funding_enabled,
         )
     )
     try:

@@ -58,57 +58,7 @@ export function verifyServerWallet(
   const privateKey = hexToBytes(privateKeyHex);
   const derivedAddress = tronAddressFromPrivateKey(privateKey);
   if (derivedAddress !== expectedAddress) {
-    throw new Error("Local wallet verification failed. The download was blocked.");
+    throw new Error("Local wallet verification failed. The private key was hidden.");
   }
   return { address: derivedAddress, privateKey: privateKeyHex.toLowerCase() };
-}
-
-export async function encryptedWalletFile(
-  wallet: { address: string; privateKey: string },
-  password: string,
-): Promise<Blob> {
-  const encoder = new TextEncoder();
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const passwordKey = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(password),
-    "PBKDF2",
-    false,
-    ["deriveKey"],
-  );
-  const encryptionKey = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", hash: "SHA-256", salt, iterations: 600_000 },
-    passwordKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt"],
-  );
-  const plaintext = encoder.encode(
-    JSON.stringify({ network: "TRON Mainnet", ...wallet, created_at: new Date().toISOString() }),
-  );
-  const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv }, encryptionKey, plaintext),
-  );
-  return new Blob(
-    [
-      JSON.stringify(
-        {
-          version: 1,
-          address: wallet.address,
-          crypto: {
-            cipher: "AES-256-GCM",
-            kdf: "PBKDF2-SHA256",
-            iterations: 600_000,
-            salt: bytesToHex(salt),
-            iv: bytesToHex(iv),
-            ciphertext: bytesToHex(ciphertext),
-          },
-        },
-        null,
-        2,
-      ),
-    ],
-    { type: "application/json" },
-  );
 }

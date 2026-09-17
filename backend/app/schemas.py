@@ -1,10 +1,11 @@
 import re
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
-from app.models import GpuStatus, JobStatus, PatternType
+from app.models import FundingStatus, GpuStatus, JobStatus, PatternType
 from app.services.patterns import BASE58_ALPHABET, PATTERN_LENGTHS, SECP256K1_ORDER
 
 FIRST_CUSTOM_CHARACTER = re.compile(r"^[9A-HJ-NP-Z]$")
@@ -144,3 +145,48 @@ class GpuFleetRead(BaseModel):
     unhealthy: int
     combined_benchmark_rate: int
     devices: list[GpuDeviceRead]
+
+
+class FundingCreate(BaseModel):
+    amount: Decimal = Field(ge=Decimal("1"), le=Decimal("1500"))
+
+    @field_validator("amount")
+    @classmethod
+    def validate_amount_precision(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("Funding amount must be a finite decimal value.")
+        if value.as_tuple().exponent < -6:
+            raise ValueError("Funding amount supports at most six decimal places.")
+        return value
+
+    @property
+    def amount_micro_usdt(self) -> int:
+        return int(self.amount * 1_000_000)
+
+
+class FundingRead(BaseModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    source_address: str | None
+    destination_address: str
+    amount_usdt: str
+    network: str
+    contract_address: str
+    status: FundingStatus
+    txid: str | None
+    explorer_url: str | None
+    failure_code: str | None
+    failure_message: str | None
+    created_at: datetime
+    updated_at: datetime
+    broadcast_at: datetime | None
+    confirmed_at: datetime | None
+
+
+class FundingConfigRead(BaseModel):
+    enabled: bool
+    mode: str
+    network: str
+    contract_address: str
+    minimum_usdt: str = "1"
+    maximum_usdt: str = "1500"

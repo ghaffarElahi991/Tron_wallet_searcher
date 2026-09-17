@@ -54,7 +54,7 @@ def recent_jobs_menu(
     jobs: list[tuple[uuid.UUID, str, str]],
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    verbs = {"watch": "Watch", "cancel": "Cancel", "reveal": "Show"}
+    verbs = {"watch": "Watch", "cancel": "Cancel", "reveal": "Show", "fund": "Fund"}
     for job_id, label, action in jobs:
         rows.append(
             [
@@ -69,3 +69,26 @@ def recent_jobs_menu(
 
 def pattern_label(pattern: PatternType) -> str:
     return pattern.value.replace("x", " × ")
+
+
+def wallet_result_menu(job_id: uuid.UUID, *, funding_enabled: bool) -> InlineKeyboardMarkup | None:
+    if not funding_enabled:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Fund wallet with USDT", callback_data=f"job:fund:{job_id}")]
+        ]
+    )
+
+
+def funding_confirmation_menu(job_id: uuid.UUID) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Confirm funding", callback_data=f"funding:confirm:{job_id}"
+                )
+            ],
+            [InlineKeyboardButton(text="Cancel", callback_data="funding:cancel")],
+        ]
+    )

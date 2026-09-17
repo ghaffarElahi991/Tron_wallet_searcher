@@ -68,6 +68,16 @@ class ShardStatus(StrEnum):
     FAILED = "failed"
 
 
+class FundingStatus(StrEnum):
+    REQUESTED = "requested"
+    PREPARING = "preparing"
+    SIGNED = "signed"
+    BROADCAST = "broadcast"
+    CONFIRMED = "confirmed"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -171,6 +181,9 @@ class GenerationJob(Base):
     shards: Mapped[list["GenerationShard"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
+    funding: Mapped["FundingTransaction | None"] = relationship(
+        back_populates="job", cascade="all, delete-orphan", uselist=False, lazy="raise"
+    )
 
 
 class GenerationResult(Base):
@@ -199,6 +212,63 @@ class GenerationResult(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     job: Mapped[GenerationJob] = relationship(back_populates="result")
+
+
+class FundingTransaction(Base):
+    __tablename__ = "funding_transactions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_funding_user_idempotency"),
+        CheckConstraint(
+            "amount_micro_usdt BETWEEN 1000000 AND 1500000000",
+            name="ck_funding_amount_range",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_funding_attempt_count_nonnegative"),
+        Index("ix_funding_status_updated", "status", "updated_at"),
+        Index("ix_funding_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[uuid_pkg.UUID] = mapped_column(Uuid, primary_key=True, default=uuid_pkg.uuid4)
+    user_id: Mapped[uuid_pkg.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[uuid_pkg.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("generation_jobs.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_address: Mapped[str | None] = mapped_column(String(34))
+    destination_address: Mapped[str] = mapped_column(String(34), nullable=False)
+    amount_micro_usdt: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    network: Mapped[str] = mapped_column(String(16), nullable=False)
+    contract_address: Mapped[str] = mapped_column(String(34), nullable=False)
+    status: Mapped[FundingStatus] = mapped_column(
+        Enum(
+            FundingStatus,
+            native_enum=False,
+            values_callable=lambda items: [item.value for item in items],
+        ),
+        default=FundingStatus.REQUESTED,
+        nullable=False,
+    )
+    txid: Mapped[str | None] = mapped_column(String(64), unique=True)
+    encrypted_signed_transaction: Mapped[str | None] = mapped_column(Text)
+    transaction_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    failure_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+    broadcast_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    job: Mapped[GenerationJob] = relationship(back_populates="funding")
 
 
 class GpuDevice(Base):

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import auth, gpus, health, jobs, results
+from app.api.routes import auth, funding, gpus, health, jobs, results
 from app.config import get_settings
 from app.services.single_user import ensure_single_user
 
@@ -55,3 +55,4 @@ app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(jobs.router, prefix=settings.api_prefix)
 app.include_router(gpus.router, prefix=settings.api_prefix)
 app.include_router(results.router, prefix=settings.api_prefix)
+app.include_router(funding.router, prefix=settings.api_prefix)

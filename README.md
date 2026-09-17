@@ -55,16 +55,22 @@ NVIDIA driver can see at least one GPU. Then run:
 ./run.sh
 ```
 
-This builds the web UI once and starts FastAPI, the CUDA scheduler, Telegram, and the watcher-free
-Next.js server. Both web services bind to `127.0.0.1`; from another computer, use an SSH tunnel for
-ports 3000 and 8000 or configure a proper HTTPS reverse proxy. For an SSH tunnel, run this on your
-computer and then open `http://localhost:3000`:
+This applies pending database migrations, builds the web UI once, and starts FastAPI, the CUDA
+scheduler, Telegram, and the watcher-free Next.js server. Browser API requests are sent through the
+Next.js same-origin proxy, while FastAPI remains private on `127.0.0.1`. From another computer, use
+an SSH tunnel for port 3000 or configure a proper HTTPS reverse proxy. For an SSH tunnel, run this
+on your computer and then open `http://localhost:3000`:
 
 ```bash
-ssh -L 3000:127.0.0.1:3000 -L 8000:127.0.0.1:8000 root@SERVER_IP
+ssh -L 3000:127.0.0.1:3000 root@SERVER_IP
 ```
 
 Logs are kept under `runtime-logs/`.
-Ctrl+C stops the four processes. The launcher runs in the foreground and does not survive an SSH
-logout; use a service manager for unattended operation. It assumes PostgreSQL migrations were
-applied by `./install.sh`.
+Ctrl+C stops all processes. The launcher runs in the foreground and does not survive an SSH
+logout; use a service manager for unattended operation.
+
+USDT funding is disabled by default. Set `TRONFORGE_FUNDING_MODE=simulator` to test the complete
+request, signing-state, broadcast-state and confirmation UI without moving funds. When funding is
+enabled, `run.sh` also starts the single-instance funding processor and writes `funding.log` beside
+the other runtime logs. Live funding configuration and its mandatory mainnet circuit breaker are
+documented in [the backend guide](backend/README.md#usdt-funding).

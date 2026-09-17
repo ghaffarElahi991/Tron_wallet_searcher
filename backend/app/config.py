@@ -1,8 +1,11 @@
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+MAINNET_USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
 
 class Settings(BaseSettings):
@@ -33,8 +36,25 @@ class Settings(BaseSettings):
     telegram_restrict_user_id: bool = True
     telegram_allowed_group_id: int = 0
     telegram_public_access: bool = False
+    telegram_funding_enabled: bool = False
     telegram_api_url: str = "http://127.0.0.1:8000/api/v1"
     telegram_poll_interval_seconds: float = Field(default=3.0, ge=1.0, le=30.0)
+    funding_mode: Literal["disabled", "simulator", "live"] = "disabled"
+    funding_network: Literal["mainnet", "nile", "shasta"] = "nile"
+    funding_allow_mainnet: bool = False
+    funding_contract_address: str = MAINNET_USDT_CONTRACT
+    funding_node_url: str = ""
+    funding_node_api_key: SecretStr = SecretStr("")
+    funding_master_private_key: SecretStr = SecretStr("")
+    funding_master_private_key_file: str = ""
+    funding_master_address: str = ""
+    funding_fee_limit_sun: int = Field(default=100_000_000, ge=1_000_000, le=1_000_000_000)
+    funding_min_available_energy: int = Field(default=65_000, ge=0)
+    funding_min_available_bandwidth: int = Field(default=350, ge=0)
+    funding_daily_limit_usdt: Decimal = Field(default=Decimal("1500"), ge=1, le=1_000_000)
+    funding_poll_interval_seconds: float = Field(default=3.0, ge=0.25, le=60.0)
+    funding_confirmation_timeout_seconds: int = Field(default=600, ge=30, le=86_400)
+    funding_lock_file: str = "/tmp/tronforge-funding.lock"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -53,6 +73,44 @@ class Settings(BaseSettings):
         if len(normalized) < 3:
             raise ValueError("admin_username must contain at least 3 characters.")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_funding_configuration(self) -> "Settings":
+        if self.telegram_funding_enabled and self.telegram_public_access:
+            raise ValueError(
+                "Telegram funding cannot be enabled while public Telegram access is enabled."
+            )
+        if self.telegram_funding_enabled and self.telegram_allowed_user_id <= 0:
+            raise ValueError(
+                "Telegram funding requires TRONFORGE_TELEGRAM_ALLOWED_USER_ID."
+            )
+        if self.funding_mode != "live":
+            return self
+        if self.funding_network == "mainnet" and not self.funding_allow_mainnet:
+            raise ValueError(
+                "Live mainnet funding requires TRONFORGE_FUNDING_ALLOW_MAINNET=true."
+            )
+        if (
+            self.funding_network == "mainnet"
+            and self.funding_contract_address != MAINNET_USDT_CONTRACT
+        ):
+            raise ValueError("Mainnet funding is restricted to the configured USDT contract.")
+        if (
+            self.funding_network != "mainnet"
+            and self.funding_contract_address == MAINNET_USDT_CONTRACT
+        ):
+            raise ValueError("Testnet funding requires a testnet TRC-20 contract address.")
+        if not self.funding_node_url.strip():
+            raise ValueError("Live funding requires TRONFORGE_FUNDING_NODE_URL.")
+        if (
+            "trongrid" in self.funding_node_url.lower()
+            and not self.funding_node_api_key.get_secret_value().strip()
+        ):
+            raise ValueError("A TronGrid funding node requires TRONFORGE_FUNDING_NODE_API_KEY.")
+        inline_key = self.funding_master_private_key.get_secret_value().strip()
+        if not inline_key and not self.funding_master_private_key_file.strip():
+            raise ValueError("Live funding requires a master private key or private-key file.")
+        return self
 
 
 @lru_cache

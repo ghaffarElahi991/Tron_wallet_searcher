@@ -79,15 +79,51 @@ export type GpuFleet = {
   devices: GpuDevice[];
 };
 
+export type FundingStatus =
+  | "requested"
+  | "preparing"
+  | "signed"
+  | "broadcast"
+  | "confirmed"
+  | "failed"
+  | "unknown";
+
+export type FundingConfig = {
+  enabled: boolean;
+  mode: "disabled" | "simulator" | "live";
+  network: "mainnet" | "nile" | "shasta";
+  contract_address: string;
+  minimum_usdt: string;
+  maximum_usdt: string;
+};
+
+export type FundingTransaction = {
+  id: string;
+  job_id: string;
+  source_address: string | null;
+  destination_address: string;
+  amount_usdt: string;
+  network: string;
+  contract_address: string;
+  status: FundingStatus;
+  txid: string | null;
+  explorer_url: string | null;
+  failure_code: string | null;
+  failure_message: string | null;
+  created_at: string;
+  updated_at: string;
+  broadcast_at: string | null;
+  confirmed_at: string | null;
+};
+
 type ApiOptions = Omit<RequestInit, "body"> & {
   token?: string;
   body?: unknown;
 };
 
-const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1").replace(
-  /\/$/,
-  "",
-);
+// Use the Next.js same-origin proxy by default. This remains valid when the UI is
+// opened through a server IP, domain, SSH tunnel, or HTTPS reverse proxy.
+const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "/api/v1").replace(/\/$/, "");
 let accessToken: string | null = null;
 let accessExpiresAt = 0;
 let refreshPromise: Promise<TokenResponse> | null = null;
@@ -256,5 +292,22 @@ export const api = {
 
   getGpuFleet(token: string) {
     return request<GpuFleet>("/gpus", { token });
+  },
+
+  getFundingConfig(token: string) {
+    return request<FundingConfig>("/funding/config", { token });
+  },
+
+  createFunding(token: string, jobId: string, amount: string, idempotencyKey: string) {
+    return request<FundingTransaction>(`/jobs/${jobId}/funding`, {
+      method: "POST",
+      token,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: { amount },
+    });
+  },
+
+  getFunding(token: string, jobId: string) {
+    return request<FundingTransaction>(`/jobs/${jobId}/funding`, { token });
   },
 };

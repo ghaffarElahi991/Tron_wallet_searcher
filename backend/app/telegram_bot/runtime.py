@@ -6,10 +6,10 @@ import uuid
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 
-from app.models import JobStatus
+from app.models import FundingStatus, JobStatus
 from app.telegram_bot.api_client import TronForgeApiClient, TronForgeApiError
-from app.telegram_bot.keyboards import cancel_job_menu
-from app.telegram_bot.messages import job_progress, wallet_result
+from app.telegram_bot.keyboards import cancel_job_menu, wallet_result_menu
+from app.telegram_bot.messages import funding_progress, job_progress, wallet_result
 
 logger = logging.getLogger(__name__)
 TERMINAL_STATUSES = {
@@ -28,11 +28,16 @@ class BotRuntime:
         poll_interval: float,
         *,
         broadcast_results_to_chat: bool = False,
+        funding_enabled: bool = False,
+        funding_operator_user_id: int = 0,
     ) -> None:
         self.api = api
         self.poll_interval = poll_interval
         self.broadcast_results_to_chat = broadcast_results_to_chat
+        self.funding_enabled = funding_enabled
+        self.funding_operator_user_id = funding_operator_user_id
         self.tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
+        self.funding_tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
 
     def monitor(
         self,
@@ -89,11 +94,26 @@ class BotRuntime:
                             raise
                     previous_text = text
                 if job.status in {JobStatus.READY, JobStatus.OWNERSHIP_VERIFIED}:
+                    result_menu = wallet_result_menu(
+                        job.id,
+                        funding_enabled=self.funding_enabled
+                        and recipient_user_id == self.funding_operator_user_id,
+                    )
                     if self.broadcast_results_to_chat:
-                        await bot.send_message(chat_id, wallet_result(job))
+                        if result_menu is None:
+                            await bot.send_message(chat_id, wallet_result(job))
+                        else:
+                            await bot.send_message(
+                                chat_id, wallet_result(job), reply_markup=result_menu
+                            )
                         return
                     try:
-                        await bot.send_message(recipient_user_id, wallet_result(job))
+                        if result_menu is None:
+                            await bot.send_message(recipient_user_id, wallet_result(job))
+                        else:
+                            await bot.send_message(
+                                recipient_user_id, wallet_result(job), reply_markup=result_menu
+                            )
                     except (TelegramForbiddenError, TelegramBadRequest) as exc:
                         logger.warning(
                             "Telegram wallet %s could not be delivered privately to %s: %s",
@@ -120,12 +140,71 @@ class BotRuntime:
                 logger.warning("Telegram job monitor %s retrying: %s", job_id, exc)
             await asyncio.sleep(self.poll_interval)
 
+    def monitor_funding(
+        self,
+        bot: Bot,
+        *,
+        chat_id: int,
+        message_id: int,
+        job_id: uuid.UUID,
+    ) -> None:
+        existing = self.funding_tasks.get(job_id)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._monitor_funding(
+                bot,
+                chat_id=chat_id,
+                message_id=message_id,
+                job_id=job_id,
+            ),
+            name=f"telegram-funding-{job_id}",
+        )
+        self.funding_tasks[job_id] = task
+        task.add_done_callback(lambda _task: self.funding_tasks.pop(job_id, None))
+
+    async def _monitor_funding(
+        self,
+        bot: Bot,
+        *,
+        chat_id: int,
+        message_id: int,
+        job_id: uuid.UUID,
+    ) -> None:
+        previous_text = ""
+        while True:
+            try:
+                funding = await self.api.get_funding(job_id)
+                text = funding_progress(funding)
+                if text != previous_text:
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=text,
+                        )
+                    except TelegramBadRequest as exc:
+                        if "message is not modified" not in str(exc).lower():
+                            raise
+                    previous_text = text
+                if funding.status in {FundingStatus.CONFIRMED, FundingStatus.FAILED}:
+                    return
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(float(exc.retry_after))
+                continue
+            except TelegramForbiddenError:
+                return
+            except (TelegramBadRequest, TronForgeApiError) as exc:
+                logger.warning("Telegram funding monitor %s retrying: %s", job_id, exc)
+            await asyncio.sleep(self.poll_interval)
+
     async def close(self) -> None:
-        tasks = list(self.tasks.values())
+        tasks = [*self.tasks.values(), *self.funding_tasks.values()]
         for task in tasks:
             task.cancel()
         for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self.tasks.clear()
+        self.funding_tasks.clear()
         await self.api.close()

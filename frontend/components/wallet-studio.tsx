@@ -4,13 +4,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   api,
+  type FundingConfig,
+  type FundingTransaction,
   type GenerationJob,
   type GpuFleet,
   type JobStatus,
   type PatternType,
   type User,
 } from "@/lib/api";
-import { encryptedWalletFile, verifyServerWallet } from "@/lib/wallet-crypto";
+import { verifyServerWallet } from "@/lib/wallet-crypto";
 import { AuthScreen } from "./auth-screen";
 import {
   ActivityIcon,
@@ -20,7 +22,6 @@ import {
   ChevronIcon,
   ClockIcon,
   CopyIcon,
-  DownloadIcon,
   ExternalIcon,
   GridIcon,
   HelpIcon,
@@ -34,7 +35,7 @@ import {
 } from "./icons";
 
 type View = "studio" | "orders" | "security" | "help";
-type Flow = "configure" | "generating" | "ready" | "delivery" | "funding" | "confirmed";
+type Flow = "configure" | "generating" | "ready" | "funding" | "confirmed";
 
 const TRON_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const VALID_FIRST_CUSTOM_CHARACTER = /^[9A-HJ-NP-Z]$/;
@@ -161,8 +162,8 @@ function Header({ view, fleet }: { view: View; fleet: GpuFleet | null }) {
 }
 
 function StepRail({ flow }: { flow: Flow }) {
-  const activeIndex = flow === "configure" ? 0 : flow === "generating" ? 1 : flow === "ready" || flow === "delivery" ? 2 : 3;
-  const steps = ["Pattern", "Generate", "Secure", "Fund"];
+  const activeIndex = flow === "configure" ? 0 : flow === "generating" ? 1 : flow === "ready" ? 2 : 3;
+  const steps = ["Pattern", "Generate", "Wallet", "Fund"];
   return (
     <div className="step-rail" aria-label="Wallet creation progress">
       {steps.map((step, index) => (
@@ -405,119 +406,142 @@ function GeneratingView({ job, fleet, onCancel, pollError }: { job: GenerationJo
   );
 }
 
-function ReadyView({ job, onDelivery }: { job: GenerationJob; onDelivery: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const address = job.result?.address ?? "";
-  async function copyAddress() {
-    await navigator.clipboard?.writeText(address);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1800);
+function ReadyView({ job, onContinue }: { job: GenerationJob; onContinue: () => void }) {
+  const [copied, setCopied] = useState<"address" | "private-key" | null>(null);
+  const [copyError, setCopyError] = useState("");
+  const verification = useMemo(() => {
+    if (!job.result) return { wallet: null, error: "The wallet result is unavailable." };
+    try {
+      return {
+        wallet: verifyServerWallet(job.result.private_key, job.result.address),
+        error: "",
+      };
+    } catch (caught) {
+      return { wallet: null, error: displayError(caught) };
+    }
+  }, [job.result]);
+
+  async function copyValue(value: string, field: "address" | "private-key") {
+    setCopyError("");
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard access is unavailable in this browser.");
+      await navigator.clipboard.writeText(value);
+      setCopied(field);
+      window.setTimeout(() => setCopied(null), 1800);
+    } catch (caught) {
+      setCopyError(displayError(caught));
+    }
   }
+
   return (
     <section className="ready-layout">
       <div className="success-panel panel">
         <span className="success-icon"><CheckIcon /></span>
         <span className="section-kicker">Match verified</span>
         <h2>Your vanity wallet is ready.</h2>
-        <p>The GPU result passed an independent address and checksum verification.</p>
-        <div className="result-address">
-          <small>Your new public address</small>
-          <div><strong>{address}</strong><button onClick={copyAddress} aria-label="Copy address">{copied ? <CheckIcon /> : <CopyIcon />}</button></div>
-          {copied && <span className="copied-label">Address copied</span>}
-        </div>
+        <p>The address and private key below passed both server and browser verification.</p>
+        {verification.wallet ? (
+          <div className="wallet-credentials">
+            <div className="wallet-credential">
+              <small>TRON wallet address</small>
+              <div><code>{verification.wallet.address}</code><button onClick={() => copyValue(verification.wallet!.address, "address")} aria-label="Copy wallet address">{copied === "address" ? <CheckIcon /> : <CopyIcon />}</button></div>
+              {copied === "address" && <span className="copied-label">Address copied</span>}
+            </div>
+            <div className="wallet-credential private-key-credential">
+              <small>Private key</small>
+              <div><code>{verification.wallet.privateKey}</code><button onClick={() => copyValue(verification.wallet!.privateKey, "private-key")} aria-label="Copy private key">{copied === "private-key" ? <CheckIcon /> : <CopyIcon />}</button></div>
+              {copied === "private-key" && <span className="copied-label">Private key copied</span>}
+            </div>
+          </div>
+        ) : (
+          <p className="form-error"><AlertIcon />{verification.error}</p>
+        )}
+        {copyError && <p className="form-error"><AlertIcon />{copyError}</p>}
         <div className="match-summary">
           <div><span><CheckIcon /></span><p><small>Prefix match</small><strong>{job.prefix}</strong></p></div>
           <div><span><CheckIcon /></span><p><small>Suffix match</small><strong>{job.suffix}</strong></p></div>
           <div><span><ShieldIcon /></span><p><small>Verification</small><strong>Passed</strong></p></div>
         </div>
         {job.observed_rate !== null && <p className="completion-rate">Final observed average: {formatRate(job.observed_rate)} address candidates.</p>}
-        <button className="primary-button wide" onClick={onDelivery}>Prepare secure download <ArrowIcon /></button>
+        <button className="primary-button wide" disabled={!verification.wallet} onClick={onContinue}>Continue to funding <ArrowIcon /></button>
       </div>
 
       <aside className="security-aside panel">
-        <span className="security-illustration"><LockIcon /></span>
-        <h3>Verified before delivery</h3>
-        <p>The server assembles the final private key after independently verifying the GPU result. Your browser verifies the address again before encrypting the download.</p>
+        <span className="security-illustration"><KeyIcon /></span>
+        <h3>Private key displayed</h3>
+        <p>The private key is printed directly in this authenticated browser session. No encrypted download is created.</p>
         <ul>
           <li><CheckIcon /> Encrypted server-side key storage</li>
-          <li><CheckIcon /> Password-protected export</li>
-          <li><CheckIcon /> Local ownership verification</li>
+          <li><CheckIcon /> Browser ownership verification</li>
+          <li><CheckIcon /> Address and key copy controls</li>
         </ul>
-        <span className="demo-warning"><AlertIcon /> Store the encrypted wallet file and its password separately.</span>
+        <span className="demo-warning"><AlertIcon /> Anyone who sees this private key can control the wallet. Copy it privately and never share it.</span>
       </aside>
     </section>
   );
 }
 
-function DeliveryView({ job, onDelivered }: { job: GenerationJob; onDelivered: () => void }) {
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [downloaded, setDownloaded] = useState(false);
-  const [encrypting, setEncrypting] = useState(false);
-  const [error, setError] = useState("");
-  const address = job.result?.address ?? "";
-  const strong = password.length >= 10;
-  const matching = password === confirm && confirm.length > 0;
+function FundingView({
+  address,
+  config,
+  funding,
+  error,
+  onConfirm,
+}: {
+  address: string;
+  config: FundingConfig | null;
+  funding: FundingTransaction | null;
+  error: string;
+  onConfirm: (amount: string) => Promise<void>;
+}) {
+  const [amount, setAmount] = useState("250");
+  const [reviewing, setReviewing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const numeric = Number(amount);
+  const valid = Number.isFinite(numeric) && numeric >= 1 && numeric <= 1500 && /^\d+(\.\d{0,6})?$/.test(amount);
 
-  async function downloadWallet() {
-    if (!strong || !matching || !job.result) return;
-    setEncrypting(true);
-    setError("");
+  async function submitFunding() {
+    if (!valid || submitting) return;
+    setSubmitting(true);
     try {
-      const wallet = verifyServerWallet(job.result.private_key, address);
-      const file = await encryptedWalletFile(wallet, password);
-      const url = URL.createObjectURL(file);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `tronforge-${address}.json`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-      setDownloaded(true);
-    } catch (caught) {
-      setError(displayError(caught));
+      await onConfirm(amount);
     } finally {
-      setEncrypting(false);
+      setSubmitting(false);
     }
   }
 
-  return (
-    <section className="delivery-layout">
-      <div className="delivery-card panel">
-        <div className="panel-heading compact">
-          <div><span className="section-kicker">03 — Secure your wallet</span><h2>Create your encrypted backup.</h2><p>This password protects the local wallet package. We cannot recover it.</p></div>
-          <span className="lock-emblem"><LockIcon /></span>
+  if (funding) {
+    const labels = {
+      requested: "Funding request queued",
+      preparing: "Preparing transaction",
+      signed: "Transaction signed securely",
+      broadcast: "Waiting for solidification",
+      confirmed: "Transfer confirmed",
+      failed: "Funding failed",
+      unknown: "Reconciling transaction",
+    };
+    return (
+      <section className="funding-layout">
+        <div className="funding-card panel funding-status-card">
+          <span className={`confirmed-check ${funding.status === "failed" ? "failed" : ""}`}>
+            {funding.status === "failed" ? <AlertIcon /> : <ActivityIcon />}
+          </span>
+          <span className="section-kicker">04 — Fund your wallet</span>
+          <h2>{labels[funding.status]}</h2>
+          <p>{funding.status === "unknown" ? "The broadcast outcome is uncertain. The original transaction is being checked and will not be replaced automatically." : funding.status === "failed" ? funding.failure_message ?? "The transfer could not be completed." : "Your persisted funding request is progressing safely in the background."}</p>
+          <div className="confirmed-amount"><small>Requested amount</small><strong>{Number(funding.amount_usdt).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} <span>USDT</span></strong></div>
+          <dl className="confirmed-details">
+            <div><dt>Destination</dt><dd>{shortAddress(funding.destination_address)}</dd></div>
+            <div><dt>Network</dt><dd>{funding.network.toUpperCase()}</dd></div>
+            <div><dt>Status</dt><dd><span className="confirmed-status"><i /> {funding.status.replace("_", " ")}</span></dd></div>
+            {funding.txid && <div><dt>Transaction</dt><dd>{funding.txid.slice(0, 10)}••••{funding.txid.slice(-6)}</dd></div>}
+          </dl>
+          {error && <p className="form-error"><AlertIcon />{error}</p>}
+          {funding.status === "failed" && <p className="review-warning"><AlertIcon />A failed or uncertain payment must be reviewed before creating any replacement transaction.</p>}
         </div>
-
-        <div className="delivery-address"><WalletIcon /><div><small>Verified destination</small><strong>{shortAddress(address)}</strong></div><span>Ready</span></div>
-
-        <div className="password-grid">
-          <label className="text-field"><span>Backup password</span><div><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 10 characters" /></div></label>
-          <label className="text-field"><span>Confirm password</span><div><input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Repeat password" /></div></label>
-        </div>
-        <div className="password-meter"><i className={strong ? "good" : ""} /><i className={strong ? "good" : ""} /><i className={password.length >= 14 ? "good" : ""} /><span>{strong ? (password.length >= 14 ? "Strong" : "Good") : "Use 10+ characters"}</span></div>
-        {confirm && !matching && <p className="form-error"><AlertIcon />Passwords do not match.</p>}
-        {error && <p className="form-error"><AlertIcon />{error}</p>}
-
-        <button className="primary-button wide" disabled={!strong || !matching || encrypting} onClick={downloadWallet}><DownloadIcon /> {encrypting ? "Verifying and encrypting…" : "Download encrypted wallet"}</button>
-        <div className="download-notice"><ShieldIcon /><p><strong>Local secure delivery</strong><br />Your browser independently verifies the recovered key, then encrypts the wallet using AES-256-GCM.</p></div>
-
-        {downloaded && (
-          <div className="confirm-download">
-            <span><CheckIcon /></span>
-            <div><strong>Encrypted wallet downloaded</strong><p>Confirm that you saved it before the browser share is removed.</p></div>
-            <button onClick={onDelivered}>I saved it <ArrowIcon /></button>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function FundingView({ address, onConfirm }: { address: string; onConfirm: (amount: number) => void }) {
-  const [amount, setAmount] = useState("250");
-  const [reviewing, setReviewing] = useState(false);
-  const numeric = Number(amount);
-  const valid = Number.isFinite(numeric) && numeric >= 1 && numeric <= 1500 && /^\d+(\.\d{0,6})?$/.test(amount);
+      </section>
+    );
+  }
 
   return (
     <section className="funding-layout">
@@ -538,8 +562,9 @@ function FundingView({ address, onConfirm }: { address: string; onConfirm: (amou
               {[50, 100, 250, 500, 1000, 1500].map((value) => <button className={numeric === value ? "active" : ""} key={value} onClick={() => setAmount(String(value))}>${value.toLocaleString()}</button>)}
             </div>
             {!valid && <p className="form-error"><AlertIcon />Enter an amount between 1 and 1,500 with up to six decimals.</p>}
-            <div className="authorized-balance"><span><ShieldIcon /></span><div><small>Demo authorized balance</small><strong>1,500.00 USDT</strong></div><em>Verified</em></div>
-            <button className="primary-button wide" disabled={!valid} onClick={() => setReviewing(true)}>Review funding <ArrowIcon /></button>
+            <div className="authorized-balance"><span><ShieldIcon /></span><div><small>Funding engine</small><strong>{config?.enabled ? `${config.mode} · ${config.network}` : "Disabled by server"}</strong></div><em>{config?.enabled ? "Available" : "Offline"}</em></div>
+            {error && <p className="form-error"><AlertIcon />{error}</p>}
+            <button className="primary-button wide" disabled={!valid || !config?.enabled} onClick={() => setReviewing(true)}>Review funding <ArrowIcon /></button>
           </>
         ) : (
           <div className="review-block">
@@ -550,8 +575,9 @@ function FundingView({ address, onConfirm }: { address: string; onConfirm: (amou
               <div><dt>Contract</dt><dd>TR7NHq...Lj6t <span>Verified</span></dd></div>
               <div><dt>Network resource</dt><dd>Calculated at signing</dd></div>
             </dl>
-            <div className="review-warning"><AlertIcon /><p>This prototype will simulate the transfer. It cannot move real USDT.</p></div>
-            <button className="primary-button wide" onClick={() => onConfirm(numeric)}>Confirm demo funding <LockIcon /></button>
+            <div className="review-warning"><AlertIcon /><p>{config?.mode === "simulator" ? "Simulator mode exercises the complete workflow without moving real USDT." : "This submits a real transfer request. It cannot be canceled after its signed transaction is broadcast."}</p></div>
+            {error && <p className="form-error"><AlertIcon />{error}</p>}
+            <button className="primary-button wide" disabled={submitting || !config?.enabled} onClick={submitFunding}>{submitting ? "Submitting securely…" : config?.mode === "simulator" ? "Confirm simulated funding" : "Confirm USDT funding"} <LockIcon /></button>
             <button className="text-button" onClick={() => setReviewing(false)}>Go back and edit</button>
           </div>
         )}
@@ -560,18 +586,19 @@ function FundingView({ address, onConfirm }: { address: string; onConfirm: (amou
   );
 }
 
-function ConfirmedView({ address, amount, onReset }: { address: string; amount: number; onReset: () => void }) {
+function ConfirmedView({ funding, onReset }: { funding: FundingTransaction; onReset: () => void }) {
+  const amount = Number(funding.amount_usdt);
   return (
     <section className="confirmed-layout">
       <div className="confirmed-card panel">
         <span className="confirmed-check"><CheckIcon /></span>
         <span className="section-kicker">Demo complete</span>
         <h2>Wallet funded successfully.</h2>
-        <p>The simulated transaction passed every step of the proposed funding workflow.</p>
+        <p>{funding.network === "mainnet" ? "The USDT transfer was found in a solidified TRON receipt." : `The ${funding.network} funding transaction completed successfully.`}</p>
         <div className="confirmed-amount"><small>Amount funded</small><strong>{amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} <span>USDT</span></strong></div>
         <dl className="confirmed-details">
-          <div><dt>Destination</dt><dd>{shortAddress(address)}</dd></div>
-          <div><dt>Transaction</dt><dd>8f2b91••••••••4a09 <ExternalIcon /></dd></div>
+          <div><dt>Destination</dt><dd>{shortAddress(funding.destination_address)}</dd></div>
+          <div><dt>Transaction</dt><dd>{funding.explorer_url ? <a href={funding.explorer_url} target="_blank" rel="noreferrer">{funding.txid?.slice(0, 8)}••••{funding.txid?.slice(-4)} <ExternalIcon /></a> : funding.txid?.slice(0, 12)}</dd></div>
           <div><dt>Confirmation</dt><dd><span className="confirmed-status"><i /> Confirmed</span></dd></div>
         </dl>
         <button className="primary-button wide" onClick={onReset}>Create another wallet <SparkIcon /></button>
@@ -610,7 +637,7 @@ function SecurityView() {
           { icon: KeyIcon, n: "01", title: "Server creates the wallet seed", text: "A cryptographically random private share is generated and immediately encrypted by the backend." },
           { icon: ActivityIcon, n: "02", title: "GPU searches with offsets", text: "Workers search the public point without receiving the encrypted base private share." },
           { icon: ShieldIcon, n: "03", title: "Server verifies and assembles", text: "The backend verifies the match, combines the key material, and encrypts the completed private key." },
-          { icon: LockIcon, n: "04", title: "Browser protects the export", text: "Your browser verifies the delivered key and creates a password-protected wallet download." },
+          { icon: KeyIcon, n: "04", title: "Browser verifies the wallet", text: "Your browser derives the address from the returned private key before displaying both values." },
         ].map((item) => {
           const Icon = item.icon;
           return <article className="security-feature panel" key={item.n}><span className="feature-number">{item.n}</span><span className="feature-icon"><Icon /></span><h3>{item.title}</h3><p>{item.text}</p></article>;
@@ -627,7 +654,7 @@ function HelpView() {
     ["What is a vanity TRON address?", "It is a valid TRON address discovered by searching for a visually recognizable prefix or suffix. It works like a normal address."],
     ["Why can’t you promise an exact wait time?", "Each candidate is random. Difficulty estimates describe probability, so an individual search can finish sooner or later than average."],
     ["Does case-insensitive matching change my address?", "No. It only allows more letter-case combinations during the search. Always use the exact capitalization in the delivered address."],
-    ["How is my private key protected?", "The backend combines the encrypted server base key with the verified GPU offset. Your browser independently verifies the result and encrypts the downloaded backup with your password."],
+    ["How is my private key delivered?", "The backend combines the encrypted server base key with the verified GPU offset. Your browser independently verifies the result, then displays the address and private key directly."],
   ];
   return (
     <section className="content-view help-layout">
@@ -650,7 +677,10 @@ export function WalletStudio() {
   const [activeJob, setActiveJob] = useState<GenerationJob | null>(null);
   const [actionError, setActionError] = useState("");
   const [pollError, setPollError] = useState("");
-  const [fundedAmount, setFundedAmount] = useState(250);
+  const [fundingConfig, setFundingConfig] = useState<FundingConfig | null>(null);
+  const [funding, setFunding] = useState<FundingTransaction | null>(null);
+  const [fundingError, setFundingError] = useState("");
+  const [fundingIdempotencyKey, setFundingIdempotencyKey] = useState<string | null>(null);
 
   const logout = useCallback(() => {
     void api.logout().catch(() => {
@@ -660,6 +690,8 @@ export function WalletStudio() {
     setJobs([]);
     setFleet(null);
     setActiveJob(null);
+    setFundingConfig(null);
+    setFunding(null);
     setFlow("configure");
   }, []);
 
@@ -686,13 +718,15 @@ export function WalletStudio() {
 
     async function refreshWorkspace() {
       try {
-        const [jobList, gpuFleet] = await Promise.all([
+        const [jobList, gpuFleet, currentFundingConfig] = await Promise.all([
           api.listJobs(session!.token),
           api.getGpuFleet(session!.token),
+          api.getFundingConfig(session!.token),
         ]);
         if (!active) return;
         setJobs(jobList.items);
         setFleet(gpuFleet);
+        setFundingConfig(currentFundingConfig);
         setJobsLoading(false);
       } catch (caught) {
         if (!active) return;
@@ -759,6 +793,51 @@ export function WalletStudio() {
     };
   }, [activeJobId, flow, logout, session]);
 
+  useEffect(() => {
+    if (!session || !activeJobId || flow !== "funding" || funding) return;
+    let active = true;
+    api.getFunding(session.token, activeJobId)
+      .then((existing) => {
+        if (!active) return;
+        setFunding(existing);
+        if (existing.status === "confirmed") setFlow("confirmed");
+      })
+      .catch((caught) => {
+        if (!active || (caught instanceof ApiError && caught.status === 404)) return;
+        setFundingError(displayError(caught));
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeJobId, flow, funding, session]);
+
+  useEffect(() => {
+    if (!session || !activeJobId || flow !== "funding" || !funding || ["confirmed", "failed"].includes(funding.status)) return;
+    let active = true;
+    let timer: number;
+    async function refreshFunding() {
+      try {
+        const refreshed = await api.getFunding(session!.token, activeJobId!);
+        if (!active) return;
+        setFunding(refreshed);
+        setFundingError("");
+        if (refreshed.status === "confirmed") {
+          setFlow("confirmed");
+          return;
+        }
+      } catch (caught) {
+        if (!active) return;
+        setFundingError(displayError(caught));
+      }
+      if (active) timer = window.setTimeout(refreshFunding, 2_000);
+    }
+    timer = window.setTimeout(refreshFunding, 1_000);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [activeJobId, flow, funding, session]);
+
   function authenticated(token: string, user: User) {
     setSession({ token, user });
     setActionError("");
@@ -793,6 +872,9 @@ export function WalletStudio() {
 
   function reset() {
     setActiveJob(null);
+    setFunding(null);
+    setFundingError("");
+    setFundingIdempotencyKey(null);
     setActionError("");
     setFlow("configure");
     setView("studio");
@@ -802,6 +884,9 @@ export function WalletStudio() {
     setView("studio");
     setActionError("");
     setActiveJob(job);
+    setFunding(null);
+    setFundingError("");
+    setFundingIdempotencyKey(null);
     if ((job.status === "ready" || job.status === "ownership_verified") && job.result) {
       setFlow("ready");
     } else if (["queued", "searching", "verifying"].includes(job.status)) {
@@ -813,9 +898,25 @@ export function WalletStudio() {
     }
   }
 
-  function finishDelivery() {
+  function openFunding() {
     if (!activeJob) return;
+    setFundingError("");
     setFlow("funding");
+  }
+
+  async function submitFunding(amount: string) {
+    if (!session || !activeJob) return;
+    setFundingError("");
+    const key = fundingIdempotencyKey ?? crypto.randomUUID();
+    setFundingIdempotencyKey(key);
+    try {
+      const created = await api.createFunding(session.token, activeJob.id, amount, key);
+      setFunding(created);
+      if (created.status === "confirmed") setFlow("confirmed");
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 401) logout();
+      setFundingError(displayError(caught));
+    }
   }
 
   function navigate(next: View) {
@@ -828,8 +929,6 @@ export function WalletStudio() {
 
   if (!session) return <AuthScreen onAuthenticated={authenticated} />;
 
-  const resultAddress = activeJob?.result?.address ?? "";
-
   return (
     <main className="app-shell">
       <Sidebar view={view} setView={navigate} user={session.user} orderCount={jobs.length} onLogout={logout} />
@@ -841,10 +940,9 @@ export function WalletStudio() {
               <StepRail flow={flow} />
               {flow === "configure" && <ConfigureView onStart={startGeneration} fleet={fleet} externalError={actionError} />}
               {flow === "generating" && activeJob && <GeneratingView job={activeJob} fleet={fleet} onCancel={cancelGeneration} pollError={pollError} />}
-              {flow === "ready" && activeJob?.result && <ReadyView job={activeJob} onDelivery={() => setFlow("delivery")} />}
-              {flow === "delivery" && activeJob?.result && <DeliveryView job={activeJob} onDelivered={finishDelivery} />}
-              {flow === "funding" && activeJob?.result && <FundingView address={resultAddress} onConfirm={(amount) => { setFundedAmount(amount); window.setTimeout(() => setFlow("confirmed"), 700); }} />}
-              {flow === "confirmed" && <ConfirmedView address={resultAddress} amount={fundedAmount} onReset={reset} />}
+              {flow === "ready" && activeJob?.result && <ReadyView job={activeJob} onContinue={openFunding} />}
+              {flow === "funding" && activeJob?.result && <FundingView address={activeJob.result.address} config={fundingConfig} funding={funding} error={fundingError} onConfirm={submitFunding} />}
+              {flow === "confirmed" && funding && <ConfirmedView funding={funding} onReset={reset} />}
             </>
           )}
           {view === "orders" && <OrdersView jobs={jobs} loading={jobsLoading} onCreate={reset} onOpen={openJob} />}
