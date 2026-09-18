@@ -63,8 +63,9 @@ For an isolated database installation/repair and end-to-end database check, use:
 ./test/db-runner.sh
 ```
 
-The first script installs and starts PostgreSQL before running the focused database provisioner.
-The second checks credentials, privileges, migrations and tables, then starts a temporary API on
+The first script installs and starts PostgreSQL, bootstraps the Python 3.12 backend environment when
+it is missing, installs the backend dependencies, and runs the focused database provisioner. The
+second checks credentials, privileges, migrations and tables, then starts a temporary API on
 `127.0.0.1:18000` and verifies both health endpoints without starting CUDA, Telegram, or the UI.
 
 ## Start the complete local stack
