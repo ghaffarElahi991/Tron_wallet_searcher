@@ -38,6 +38,7 @@ class ReceiptState(StrEnum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
     FAILED = "failed"
+    UNKNOWN = "unknown"
     NOT_FOUND = "not_found"
 
 
@@ -124,6 +125,12 @@ def _read_master_private_key(settings: Settings) -> str:
 
 
 def _normalize_log_address(value: str) -> str:
+    value = value.strip()
+    try:
+        if is_base58check_address(value):
+            value = to_hex_address(value)
+    except (IndexError, ValueError):
+        pass
     normalized = value.lower().removeprefix("0x")
     return normalized[2:] if len(normalized) == 42 and normalized.startswith("41") else normalized
 
@@ -294,8 +301,9 @@ class TronFundingGateway:
             amount=amount_micro_usdt,
         ):
             return ReceiptResult(
-                ReceiptState.FAILED,
-                "The solidified receipt does not contain the expected USDT Transfer event.",
+                ReceiptState.UNKNOWN,
+                "The transaction executed successfully, but the expected USDT Transfer event "
+                "could not be verified. Do not submit a replacement transaction.",
             )
         return ReceiptResult(ReceiptState.CONFIRMED)
 

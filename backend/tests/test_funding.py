@@ -11,6 +11,7 @@ from app.api.routes import funding as funding_routes
 from app.config import MAINNET_USDT_CONTRACT, Settings, get_settings
 from app.funding.gateway import (
     TRANSFER_EVENT_TOPIC,
+    ReceiptResult,
     ReceiptState,
     SimulatorFundingGateway,
     TronFundingGateway,
@@ -200,6 +201,51 @@ async def test_processor_persists_before_broadcast_and_then_confirms() -> None:
     await processor.gateway.close()
 
 
+async def test_processor_keeps_unverified_successful_receipt_in_reconciliation() -> None:
+    class UnknownGateway:
+        async def receipt(self, **_kwargs) -> ReceiptResult:
+            return ReceiptResult(ReceiptState.UNKNOWN, "Receipt event needs reconciliation.")
+
+    class FakeRepository:
+        def __init__(self) -> None:
+            self.unknown: tuple[uuid.UUID, str] | None = None
+
+        async def mark_unknown(self, funding_id: uuid.UUID, message: str) -> None:
+            self.unknown = funding_id, message
+
+        async def mark_confirmed(self, *_args, **_kwargs) -> None:
+            raise AssertionError("Unverified receipt must not be confirmed")
+
+        async def mark_failed(self, *_args, **_kwargs) -> None:
+            raise AssertionError("Unverified successful receipt must not be marked failed")
+
+        async def mark_checked(self, *_args, **_kwargs) -> None:
+            raise AssertionError("Unknown receipt should be persisted explicitly")
+
+    settings = Settings(_env_file=None, funding_mode="simulator")
+    processor = FundingProcessor(settings)
+    repository = FakeRepository()
+    processor.repository = repository  # type: ignore[assignment]
+    await processor.gateway.close()
+    processor.gateway = UnknownGateway()  # type: ignore[assignment]
+    funding_id = uuid.uuid4()
+
+    await processor._confirm(
+        SimpleNamespace(
+            id=funding_id,
+            status=FundingStatus.BROADCAST,
+            txid="ab" * 32,
+            contract_address=MAINNET_USDT_CONTRACT,
+            destination_address="TJDPwALmYf7W4XbWPyNSvkyDQ76p7wQYnN",
+            amount_micro_usdt=4_000_000,
+            transaction_expires_at=None,
+            encrypted_signed_transaction=None,
+        )
+    )
+
+    assert repository.unknown == (funding_id, "Receipt event needs reconciliation.")
+
+
 def test_expected_transfer_event_must_match_contract_destination_and_amount() -> None:
     destination = "TQriju7D5yYGFMiwnTEyKJ3eQ4eGupnY99"
     contract_hex = to_hex_address(MAINNET_USDT_CONTRACT)[2:]
@@ -224,6 +270,28 @@ def test_expected_transfer_event_must_match_contract_destination_and_amount() ->
         contract_address=MAINNET_USDT_CONTRACT,
         destination=destination,
         amount=2_000_000,
+    )
+
+
+def test_visible_trongrid_receipt_accepts_base58_contract_address() -> None:
+    destination = "TJDPwALmYf7W4XbWPyNSvkyDQ76p7wQYnN"
+    destination_topic = to_hex_address(destination)[2:].rjust(64, "0")
+    receipt = {
+        "receipt": {"result": "SUCCESS"},
+        "log": [
+            {
+                "address": MAINNET_USDT_CONTRACT,
+                "topics": [TRANSFER_EVENT_TOPIC, "0" * 64, destination_topic],
+                "data": f"{4_000_000:064x}",
+            }
+        ],
+    }
+
+    assert _transfer_event_matches(
+        receipt,
+        contract_address=MAINNET_USDT_CONTRACT,
+        destination=destination,
+        amount=4_000_000,
     )
 
 

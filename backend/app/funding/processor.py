@@ -128,6 +128,13 @@ class FundingProcessor:
         if receipt.state == ReceiptState.CONFIRMED:
             await self.repository.mark_confirmed(funding.id)
             return
+        if receipt.state == ReceiptState.UNKNOWN:
+            await self.repository.mark_unknown(
+                funding.id,
+                receipt.message
+                or "The successful receipt could not be matched to the expected transfer.",
+            )
+            return
         if receipt.state == ReceiptState.FAILED:
             await self.repository.mark_failed(
                 funding.id,
