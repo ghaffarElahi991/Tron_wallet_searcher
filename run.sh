@@ -15,6 +15,11 @@ PIDS=()
 step() { printf '\n==> %s\n' "$1"; }
 fail() { printf 'Launcher error: %s\n' "$1" >&2; exit 1; }
 
+if [[ -v TRONFORGE_DATABASE_URL ]]; then
+  printf 'Launcher warning: ignoring inherited TRONFORGE_DATABASE_URL; backend/.env is authoritative.\n' >&2
+  unset TRONFORGE_DATABASE_URL
+fi
+
 shutdown() {
   trap - EXIT INT TERM
   if [[ ${#PIDS[@]} -eq 0 ]]; then return; fi
@@ -61,9 +66,24 @@ import socket
 import subprocess
 from pathlib import Path
 
+import psycopg
+from sqlalchemy.engine import make_url
+
 from app.config import get_settings
 
 settings = get_settings()
+try:
+    database_url = make_url(settings.database_url)
+    database_dsn = database_url.set(drivername="postgresql").render_as_string(
+        hide_password=False
+    )
+    with psycopg.connect(database_dsn, connect_timeout=5) as database:
+        database.execute("SELECT 1")
+except (ValueError, psycopg.Error) as exc:
+    raise SystemExit(
+        "Cannot authenticate to PostgreSQL using backend/.env. "
+        "Stop the stack and run ./install.sh --database-only from the repository root."
+    ) from exc
 if settings.generator_mode != "cuda":
     raise SystemExit("TRONFORGE_GENERATOR_MODE must be cuda to start the real GPU scheduler.")
 if not settings.telegram_bot_token.get_secret_value().strip():
@@ -120,6 +140,7 @@ for port in (8000, 3000):
 
 print(f"CUDA devices visible: {len(devices)}")
 print("CUDA cryptographic self-tests passed on every visible GPU.")
+print("PostgreSQL authentication passed using backend/.env.")
 print("API: 127.0.0.1:8000; web UI: 127.0.0.1:3000")
 if settings.telegram_public_access:
     print("WARNING: Telegram public access is enabled; group users may see wallet private keys.")

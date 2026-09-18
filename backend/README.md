@@ -68,8 +68,8 @@ If the local PostgreSQL password, role, database ownership, or schema access is 
 ./install.sh --database-only
 ```
 
-The repair preserves the existing environment file, synchronizes the local `tronforge` role,
-verifies login and permissions, and applies all migrations.
+The repair preserves all other environment settings, rotates the local `tronforge` password in
+PostgreSQL and `backend/.env`, verifies login and permissions, and applies all migrations.
 
 For a no-watcher run, omit `--reload`.
 

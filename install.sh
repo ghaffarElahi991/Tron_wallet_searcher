@@ -19,6 +19,12 @@ DATABASE_ONLY=0
 
 step() { printf '\n==> %s\n' "$1"; }
 fail() { printf 'Installer error: %s\n' "$1" >&2; exit 1; }
+
+if [[ -v TRONFORGE_DATABASE_URL ]]; then
+  printf 'Installer warning: ignoring inherited TRONFORGE_DATABASE_URL; backend/.env is authoritative.\n' >&2
+  unset TRONFORGE_DATABASE_URL
+fi
+
 run_as_root() {
   if [[ "$EUID" -eq 0 ]]; then
     "$@"
@@ -62,10 +68,15 @@ ensure_postgresql_running() {
 
 provision_database() {
   local fresh_env="$1"
+  local rotate_password="${2:-0}"
   step "Provision or repair PostgreSQL role, database, and schema"
-  (cd "$BACKEND_DIR" && "$VENV_PYTHON" - "$fresh_env" "$EUID" <<'PY'
+  (cd "$BACKEND_DIR" && "$VENV_PYTHON" - "$fresh_env" "$EUID" "$rotate_password" <<'PY'
+import os
+import secrets
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 import psycopg
 from psycopg import sql
@@ -74,6 +85,7 @@ from sqlalchemy.engine import make_url
 from app.config import get_settings
 
 fresh_env = sys.argv[1] == "1"
+rotate_password = sys.argv[3] == "1"
 postgres_runner = ["runuser", "-u", "postgres", "--"] if sys.argv[2] == "0" else [
     "sudo", "-u", "postgres", "--"
 ]
@@ -93,6 +105,45 @@ local_target = (
 )
 if fresh_env and not local_target:
     raise SystemExit("New installation can auto-provision only the local tronforge database.")
+def save_database_url(updated_url: str) -> None:
+    env_path = Path(".env")
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    replacement_count = 0
+    updated_lines = []
+    for line in lines:
+        if line.startswith("TRONFORGE_DATABASE_URL="):
+            updated_lines.append(f"TRONFORGE_DATABASE_URL={updated_url}")
+            replacement_count += 1
+        else:
+            updated_lines.append(line)
+    if replacement_count != 1:
+        raise SystemExit(
+            "backend/.env must contain exactly one TRONFORGE_DATABASE_URL entry."
+        )
+    original_mode = env_path.stat().st_mode & 0o777
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=env_path.parent, prefix=".env.", delete=False
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write("\n".join(updated_lines) + "\n")
+        os.chmod(temp_path, original_mode)
+        os.replace(temp_path, env_path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def validate_database_url_entry() -> None:
+    entry_count = sum(
+        line.startswith("TRONFORGE_DATABASE_URL=")
+        for line in Path(".env").read_text(encoding="utf-8").splitlines()
+    )
+    if entry_count != 1:
+        raise SystemExit(
+            "backend/.env must contain exactly one TRONFORGE_DATABASE_URL entry."
+        )
 
 
 def postgres_query(statement: str, *, database: str = "postgres") -> str:
@@ -133,6 +184,11 @@ def postgres_execute(statement: str, *, database: str = "postgres") -> None:
 if local_target:
     if postgres_query("SHOW port") != "5432":
         raise SystemExit("Local PostgreSQL is not using port 5432; no role or database was changed.")
+
+    if rotate_password:
+        validate_database_url_entry()
+        url = url.set(password=secrets.token_urlsafe(32))
+        dsn = url.set(drivername="postgresql").render_as_string(hide_password=False)
 
     role_exists = postgres_query("SELECT 1 FROM pg_roles WHERE rolname = 'tronforge'") == "1"
     password_literal = sql.Literal(url.password).as_string()
@@ -175,6 +231,9 @@ except psycopg.Error as exc:
     raise SystemExit(
         "Cannot connect using backend/.env after PostgreSQL provisioning."
     ) from exc
+if local_target and rotate_password:
+    save_database_url(url.render_as_string(hide_password=False))
+    print("Rotated the local database password in PostgreSQL and backend/.env.")
 print("PostgreSQL password, ownership, and schema access verified.")
 PY
   )
@@ -313,7 +372,7 @@ if [[ "$DATABASE_ONLY" -eq 1 ]]; then
   [[ -x "${BACKEND_DIR}/.venv/bin/alembic" ]] || \
     fail "Alembic is missing from backend/.venv; run the full installer first."
   ensure_postgresql_running
-  provision_database 0
+  provision_database 0 1
   step "Database repair complete"
   printf 'The tronforge role, password, database ownership, schema access, and migrations are ready.\n'
   exit 0
@@ -539,7 +598,7 @@ print("Created backend/.env with new random credentials (values not displayed)."
 PY
 fi
 
-provision_database "$NEW_ENV"
+provision_database "$NEW_ENV" 0
 
 step "Install locked Next.js dependencies"
 (cd "$FRONTEND_DIR" && npm ci --no-audit --no-fund)

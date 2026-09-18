@@ -52,8 +52,20 @@ and run this focused repair from the repository root:
 ./install.sh --database-only
 ```
 
-This preserves `backend/.env` and does not reinstall CUDA, rebuild the native generator, or
-reinstall frontend dependencies.
+This preserves every other setting, rotates the local database password in both PostgreSQL and
+`backend/.env`, and does not reinstall CUDA, rebuild the native generator, or reinstall frontend
+dependencies.
+
+For an isolated database installation/repair and end-to-end database check, use:
+
+```bash
+./test/db-install.sh
+./test/db-runner.sh
+```
+
+The first script installs and starts PostgreSQL before running the focused database provisioner.
+The second checks credentials, privileges, migrations and tables, then starts a temporary API on
+`127.0.0.1:18000` and verifies both health endpoints without starting CUDA, Telegram, or the UI.
 
 ## Start the complete local stack
 
