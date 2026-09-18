@@ -72,10 +72,6 @@ def wallet_commands_allowed(
     )
 
 
-def telegram_funding_allowed(*, user_id: int | None, allowed_user_id: int) -> bool:
-    return user_id is not None and allowed_user_id > 0 and user_id == allowed_user_id
-
-
 def _is_start_message(event: TelegramObject) -> bool:
     if not isinstance(event, Message) or not event.text:
         return False
@@ -390,10 +386,7 @@ def create_router(
                 buttons.append((job.id, str(job.id)[:8], "cancel"))
             elif job.status in {JobStatus.READY, JobStatus.OWNERSHIP_VERIFIED} and job.result:
                 buttons.append((job.id, str(job.id)[:8], "reveal"))
-                if funding_enabled and telegram_funding_allowed(
-                    user_id=callback.from_user.id,
-                    allowed_user_id=allowed_user_id,
-                ):
+                if funding_enabled:
                     buttons.append((job.id, str(job.id)[:8], "fund"))
         await callback.message.edit_text(
             "\n".join(lines), reply_markup=recent_jobs_menu(buttons)
@@ -442,18 +435,21 @@ def create_router(
             job = await runtime.api.get_job(job_id)
             if job.result is None:
                 raise TronForgeApiError("This wallet is not ready.")
+            shared_group = (
+                not restrict_user_id
+                and callback.message is not None
+                and callback.message.chat.type in {"group", "supergroup"}
+                and allowed_group_id != 0
+                and callback.message.chat.id == allowed_group_id
+            )
             result_chat_id = (
                 callback.message.chat.id
-                if public_access and callback.message is not None
+                if (public_access or shared_group) and callback.message is not None
                 else callback.from_user.id
             )
             result_menu = wallet_result_menu(
                 job.id,
-                funding_enabled=funding_enabled
-                and telegram_funding_allowed(
-                    user_id=callback.from_user.id,
-                    allowed_user_id=allowed_user_id,
-                ),
+                funding_enabled=funding_enabled,
             )
             if result_menu is None:
                 await callback.bot.send_message(result_chat_id, wallet_result(job))
@@ -464,7 +460,7 @@ def create_router(
         except (TelegramForbiddenError, TelegramBadRequest):
             await callback.answer(
                 "Cannot send the wallet to this chat."
-                if public_access
+                if public_access or not restrict_user_id
                 else "Open this bot in private, send /start, then press Reveal again.",
                 show_alert=True,
             )
@@ -476,13 +472,8 @@ def create_router(
 
     @router.callback_query(F.data.startswith("job:fund:"))
     async def start_funding(callback: CallbackQuery, state: FSMContext) -> None:
-        if not funding_enabled or not telegram_funding_allowed(
-            user_id=callback.from_user.id,
-            allowed_user_id=allowed_user_id,
-        ):
-            await callback.answer(
-                "Only the configured funding operator can do that.", show_alert=True
-            )
+        if not funding_enabled:
+            await callback.answer("Telegram funding is disabled.", show_alert=True)
             return
         if callback.message is None:
             await callback.answer("Message is unavailable.", show_alert=True)
@@ -546,15 +537,9 @@ def create_router(
     ) -> None:
         if (
             not funding_enabled
-            or not telegram_funding_allowed(
-                user_id=callback.from_user.id,
-                allowed_user_id=allowed_user_id,
-            )
             or callback.message is None
         ):
-            await callback.answer(
-                "Only the configured funding operator can do that.", show_alert=True
-            )
+            await callback.answer("Telegram funding is disabled.", show_alert=True)
             return
         data = await state.get_data()
         try:

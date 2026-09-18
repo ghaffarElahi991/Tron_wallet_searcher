@@ -76,14 +76,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_funding_configuration(self) -> "Settings":
-        if self.telegram_funding_enabled and self.telegram_public_access:
-            raise ValueError(
-                "Telegram funding cannot be enabled while public Telegram access is enabled."
-            )
-        if self.telegram_funding_enabled and self.telegram_allowed_user_id <= 0:
-            raise ValueError(
-                "Telegram funding requires TRONFORGE_TELEGRAM_ALLOWED_USER_ID."
-            )
         if self.funding_mode != "live":
             return self
         if self.funding_network == "mainnet" and not self.funding_allow_mainnet:

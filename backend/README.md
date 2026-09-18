@@ -157,8 +157,12 @@ expected contract, destination and amount in its `Transfer` event.
 
 Run `alembic upgrade head` after updating, then start the stack with `./run.sh`. The launcher starts
 the funding processor whenever funding mode is `simulator` or `live`. Telegram funding also requires
-`TRONFORGE_TELEGRAM_FUNDING_ENABLED=true`; that option is rejected while public Telegram access is
-enabled so group members cannot spend from the master wallet.
+`TRONFORGE_TELEGRAM_FUNDING_ENABLED=true`. Funding uses the same access rules as every other bot
+operation: any user who can use the bot can submit and confirm a master-wallet transfer. No separate
+funding operator ID is required. For an allowlisted group, use
+`TRONFORGE_TELEGRAM_PUBLIC_ACCESS=false`, `TRONFORGE_TELEGRAM_RESTRICT_USER_ID=false`, and the exact
+`TRONFORGE_TELEGRAM_ALLOWED_GROUP_ID`. With public access enabled, any human who can reach the bot
+can also fund a wallet.
 
 ## Telegram bot
 
@@ -196,22 +200,20 @@ should not be used with funded wallets or secrets you need to keep private.
 To let every member of one group use the bot, set `TRONFORGE_TELEGRAM_RESTRICT_USER_ID=false` and
 restart it. Send `/start` in that group; the bot replies with its chat ID but does not enable wallet
 controls yet. Copy that ID into `TRONFORGE_TELEGRAM_ALLOWED_GROUP_ID`, then restart the bot again.
-Only this exact group can run wallet commands; other groups and private chats cannot. With the user-ID
-restriction left on, only the configured operator ID can use wallet controls in private chat or the
-allowlisted group.
+Only this exact group can run wallet commands; other groups and private chats cannot. Every group
+member can generate, reveal, and—when enabled—fund wallets. Completed addresses and private keys are
+posted to the shared group. With the user-ID restriction left on, only the configured operator ID can
+use wallet controls in private chat or the allowlisted group.
 
 In the group, reply directly to the bot's prefix and suffix prompts; the bot requests those replies
 so the flow also works with Telegram privacy mode enabled. If a plain `/start` is not delivered in a
 busy group, address the command to the bot as `/start@YourBotUsername`.
 
-Every group member should also open the bot privately and send `/start` once. Generation progress
-stays in the group, but the verified address and private key are sent only to the requesting member
-by direct message. If that DM is unavailable, the group receives an instruction to start a private
-chat and use `Recent jobs → Reveal`; the key is never posted to the group. Any member of the
-allowlisted group can reveal any ready wallet to their own DM because the backend still uses one
-shared operator account. Sending a private key through Telegram or displaying it in a browser
-exposes sensitive wallet material; import it promptly, keep an offline backup, and remove any
-messages or screenshots.
+In shared-group mode, generation progress and the verified address/private key remain in the group;
+members do not need to open a private chat first. All members share one backend account and can list,
+cancel, reveal, and fund each other's jobs. Sending a private key through Telegram or displaying it
+in a browser exposes sensitive wallet material; import it promptly, keep an offline backup, and
+remove any messages or screenshots.
 
 The bot does not have an idle login timeout. It signs in with the configured operator credentials
 before its short-lived API token expires, and reauthenticates once if an unexpected 401 occurs. A

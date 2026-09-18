@@ -29,13 +29,11 @@ class BotRuntime:
         *,
         broadcast_results_to_chat: bool = False,
         funding_enabled: bool = False,
-        funding_operator_user_id: int = 0,
     ) -> None:
         self.api = api
         self.poll_interval = poll_interval
         self.broadcast_results_to_chat = broadcast_results_to_chat
         self.funding_enabled = funding_enabled
-        self.funding_operator_user_id = funding_operator_user_id
         self.tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
         self.funding_tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
 
@@ -96,8 +94,7 @@ class BotRuntime:
                 if job.status in {JobStatus.READY, JobStatus.OWNERSHIP_VERIFIED}:
                     result_menu = wallet_result_menu(
                         job.id,
-                        funding_enabled=self.funding_enabled
-                        and recipient_user_id == self.funding_operator_user_id,
+                        funding_enabled=self.funding_enabled,
                     )
                     if self.broadcast_results_to_chat:
                         if result_menu is None:

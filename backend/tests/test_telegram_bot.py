@@ -17,7 +17,6 @@ from app.telegram_bot import api_client as api_client_module
 from app.telegram_bot.api_client import TronForgeApiClient
 from app.telegram_bot.handlers import (
     create_router,
-    telegram_funding_allowed,
     wallet_commands_allowed,
 )
 from app.telegram_bot.messages import job_progress, wallet_result
@@ -302,10 +301,50 @@ def test_public_access_setting_is_read_from_env(monkeypatch) -> None:
     assert settings.telegram_public_access is True
 
 
-def test_telegram_funding_is_limited_to_configured_operator() -> None:
-    assert telegram_funding_allowed(user_id=42, allowed_user_id=42)
-    assert not telegram_funding_allowed(user_id=43, allowed_user_id=42)
-    assert not telegram_funding_allowed(user_id=42, allowed_user_id=0)
+@pytest.mark.anyio
+async def test_any_authorized_bot_user_can_start_funding_without_operator_id() -> None:
+    job_id = uuid.uuid4()
+    prompts: list[str] = []
+    answers: list[str] = []
+
+    class FakeMessage:
+        async def answer(self, text: str, **_kwargs) -> None:
+            prompts.append(text)
+
+    class FakeCallback:
+        data = f"job:fund:{job_id}"
+        message = FakeMessage()
+        from_user = SimpleNamespace(id=987654)
+
+        async def answer(self, text: str = "", **_kwargs) -> None:
+            answers.append(text)
+
+    class FakeState:
+        def __init__(self) -> None:
+            self.data: dict[str, str] = {}
+            self.state = None
+
+        async def clear(self) -> None:
+            self.data.clear()
+
+        async def set_state(self, state) -> None:
+            self.state = state
+
+        async def update_data(self, **kwargs: str) -> None:
+            self.data.update(kwargs)
+
+    router = create_router(0, public_access=True, funding_enabled=True)
+    handler = next(
+        item.callback
+        for item in router.callback_query.handlers
+        if item.callback.__name__ == "start_funding"
+    )
+    state = FakeState()
+    await handler(FakeCallback(), state)
+
+    assert state.data == {"funding_job_id": str(job_id)}
+    assert prompts and "1 to 1,500 USDT" in prompts[0]
+    assert answers == [""]
 
 
 @pytest.mark.anyio

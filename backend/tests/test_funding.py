@@ -227,13 +227,14 @@ def test_expected_transfer_event_must_match_contract_destination_and_amount() ->
     )
 
 
-def test_public_telegram_cannot_enable_master_wallet_funding() -> None:
-    with pytest.raises(ValidationError, match="Telegram funding cannot be enabled"):
-        Settings(
-            _env_file=None,
-            telegram_public_access=True,
-            telegram_funding_enabled=True,
-        )
+def test_public_telegram_can_enable_shared_master_wallet_funding() -> None:
+    settings = Settings(
+        _env_file=None,
+        telegram_public_access=True,
+        telegram_funding_enabled=True,
+        telegram_allowed_user_id=0,
+    )
+    assert settings.telegram_funding_enabled is True
 
 
 def test_live_mainnet_requires_explicit_circuit_breaker() -> None:

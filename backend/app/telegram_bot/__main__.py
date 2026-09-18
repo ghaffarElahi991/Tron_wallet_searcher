@@ -56,9 +56,12 @@ async def run() -> None:
     runtime = BotRuntime(
         api,
         settings.telegram_poll_interval_seconds,
-        broadcast_results_to_chat=settings.telegram_public_access,
+        broadcast_results_to_chat=settings.telegram_public_access
+        or (
+            not settings.telegram_restrict_user_id
+            and settings.telegram_allowed_group_id != 0
+        ),
         funding_enabled=settings.telegram_funding_enabled,
-        funding_operator_user_id=settings.telegram_allowed_user_id,
     )
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(
