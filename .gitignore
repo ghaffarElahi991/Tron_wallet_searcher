@@ -14,6 +14,7 @@
 # local environment
 .env*
 !.env.example
+backend/app/local_constants.py
 
 # logs and editor files
 *.log

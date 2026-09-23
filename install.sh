@@ -258,6 +258,8 @@ trap 'printf "Installer stopped at line %s. Existing .env and database were not 
 
 [[ -f "${BACKEND_DIR}/pyproject.toml" ]] || fail "backend/pyproject.toml is missing."
 [[ -f "${BACKEND_DIR}/.env.example" ]] || fail "backend/.env.example is missing."
+[[ -f "${BACKEND_DIR}/app/local_constants.py.example" ]] || \
+  fail "backend/app/local_constants.py.example is missing."
 [[ -f "${FRONTEND_DIR}/package-lock.json" ]] || fail "frontend/package-lock.json is missing."
 [[ -f "${NATIVE_DIR}/CMakeLists.txt" ]] || fail "native/CMakeLists.txt is missing."
 [[ "$(uname -s)" == "Linux" ]] || fail "This installer requires Linux."
@@ -345,6 +347,11 @@ if [[ "${1:-}" == "--check" && $# -eq 1 ]]; then
   else
     printf 'backend/.env: absent (installer will create it)\n'
   fi
+  if [[ -f "${BACKEND_DIR}/app/local_constants.py" ]]; then
+    printf 'backend/app/local_constants.py: present (will be preserved)\n'
+  else
+    printf 'backend/app/local_constants.py: absent (installer will create it)\n'
+  fi
   if nvidia_gpu_visible; then
     printf 'NVIDIA GPU: visible through the driver\n'
   elif nvidia_gpu_hardware_present; then
@@ -376,6 +383,13 @@ if [[ "$DATABASE_ONLY" -eq 1 ]]; then
   step "Database repair complete"
   printf 'The tronforge role, password, database ownership, schema access, and migrations are ready.\n'
   exit 0
+fi
+
+if [[ ! -e "${BACKEND_DIR}/app/local_constants.py" ]]; then
+  step "Create private local Telegram and funding constants"
+  install -m 600 \
+    "${BACKEND_DIR}/app/local_constants.py.example" \
+    "${BACKEND_DIR}/app/local_constants.py"
 fi
 
 if [[ "$CPU_ONLY" -eq 0 ]] && ! nvidia_gpu_visible; then
@@ -669,4 +683,5 @@ if [[ "$NEW_ENV" -eq 1 ]]; then
 else
   printf 'Existing backend/.env was preserved.\n'
 fi
+printf 'Set Telegram and live-funding credentials in backend/app/local_constants.py.\n'
 printf 'This installer does not start the API, generator, web UI or Telegram bot.\n'

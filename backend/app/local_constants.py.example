@@ -1,0 +1,15 @@
+"""Server-local Telegram and funding credentials.
+
+Copy this file to ``backend/app/local_constants.py``, keep that file private,
+and never commit or share the populated copy.
+"""
+
+TELEGRAM_BOT_TOKEN = ""
+TELEGRAM_ALLOWED_USER_ID = None
+
+FUNDING_NODE_URL = "https://api.trongrid.io"
+FUNDING_NODE_API_KEY = ""
+FUNDING_MASTER_PRIVATE_KEY = ""
+FUNDING_MASTER_ADDRESS = ""
+
+TELEGRAM_FUNDING_ENABLED = True

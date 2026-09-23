@@ -49,6 +49,8 @@ trap 'exit 143' TERM
 
 [[ $# -eq 0 || ( $# -eq 1 && "${1:-}" == "--check" ) ]] || fail "Usage: ./run.sh [--check]"
 [[ -f "${BACKEND_DIR}/.env" ]] || fail "backend/.env is missing; run ./install.sh first."
+[[ -f "${BACKEND_DIR}/app/local_constants.py" ]] || \
+  fail "backend/app/local_constants.py is missing; copy it from local_constants.py.example."
 [[ -x "$VENV_PYTHON" && -x "$UVICORN_BIN" ]] || \
   fail "Backend virtual environment is incomplete; run ./install.sh first."
 [[ -x "$NEXT_BIN" ]] || fail "Frontend dependencies are missing; run ./install.sh first."
@@ -87,7 +89,7 @@ except (ValueError, psycopg.Error) as exc:
 if settings.generator_mode != "cuda":
     raise SystemExit("TRONFORGE_GENERATOR_MODE must be cuda to start the real GPU scheduler.")
 if not settings.telegram_bot_token.get_secret_value().strip():
-    raise SystemExit("TRONFORGE_TELEGRAM_BOT_TOKEN is empty in backend/.env.")
+    raise SystemExit("TELEGRAM_BOT_TOKEN is empty in backend/app/local_constants.py.")
 
 native_binary = Path(settings.generator_native_binary).resolve()
 if not native_binary.is_file() or not os.access(native_binary, os.X_OK):

@@ -146,8 +146,9 @@ class OperatorOnlyMiddleware(BaseMiddleware):
                 and event.chat.type == "private"
             ):
                 await event.answer(
-                    "Bot setup is incomplete. Add this value to backend/.env and restart:\n\n"
-                    f"<code>TRONFORGE_TELEGRAM_ALLOWED_USER_ID={event.from_user.id}</code>"
+                    "Bot setup is incomplete. Add this value to "
+                    "backend/app/local_constants.py and restart:\n\n"
+                    f"<code>TELEGRAM_ALLOWED_USER_ID = {event.from_user.id}</code>"
                 )
             else:
                 await event.answer("Access denied.")

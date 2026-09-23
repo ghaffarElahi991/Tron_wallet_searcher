@@ -3,9 +3,60 @@ from functools import lru_cache
 from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+try:
+    from app import local_constants
+except ModuleNotFoundError as exc:
+    if exc.name != "app.local_constants":
+        raise
+    local_constants = None
 
 MAINNET_USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+
+
+def _local_constant_values() -> dict[str, object]:
+    values: dict[str, object] = {
+        "telegram_funding_enabled": True,
+        "funding_node_url": "https://api.trongrid.io",
+    }
+    if local_constants is None:
+        return values
+
+    candidates = {
+        "telegram_bot_token": getattr(local_constants, "TELEGRAM_BOT_TOKEN", ""),
+        "telegram_allowed_user_id": getattr(
+            local_constants, "TELEGRAM_ALLOWED_USER_ID", None
+        ),
+        "funding_node_url": getattr(
+            local_constants, "FUNDING_NODE_URL", "https://api.trongrid.io"
+        ),
+        "funding_node_api_key": getattr(local_constants, "FUNDING_NODE_API_KEY", ""),
+        "funding_master_private_key": getattr(
+            local_constants, "FUNDING_MASTER_PRIVATE_KEY", ""
+        ),
+        "funding_master_address": getattr(local_constants, "FUNDING_MASTER_ADDRESS", ""),
+        "telegram_funding_enabled": getattr(
+            local_constants, "TELEGRAM_FUNDING_ENABLED", True
+        ),
+    }
+    for field_name, value in candidates.items():
+        if value is not None and (not isinstance(value, str) or value.strip()):
+            values[field_name] = value
+    return values
+
+
+class LocalConstantsSettingsSource(PydanticBaseSettingsSource):
+    def get_field_value(self, field, field_name: str) -> tuple[object, str, bool]:
+        value = _local_constant_values().get(field_name)
+        return value, field_name, False
+
+    def __call__(self) -> dict[str, object]:
+        return _local_constant_values()
 
 
 class Settings(BaseSettings):
@@ -36,7 +87,7 @@ class Settings(BaseSettings):
     telegram_restrict_user_id: bool = True
     telegram_allowed_group_id: int = 0
     telegram_public_access: bool = False
-    telegram_funding_enabled: bool = False
+    telegram_funding_enabled: bool = True
     telegram_api_url: str = "http://127.0.0.1:8000/api/v1"
     telegram_poll_interval_seconds: float = Field(default=3.0, ge=1.0, le=30.0)
     funding_mode: Literal["disabled", "simulator", "live"] = "disabled"
@@ -61,6 +112,23 @@ class Settings(BaseSettings):
         env_prefix="TRONFORGE_",
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        return (
+            init_settings,
+            LocalConstantsSettingsSource(settings_cls),
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -93,12 +161,17 @@ class Settings(BaseSettings):
         ):
             raise ValueError("Testnet funding requires a testnet TRC-20 contract address.")
         if not self.funding_node_url.strip():
-            raise ValueError("Live funding requires TRONFORGE_FUNDING_NODE_URL.")
+            raise ValueError(
+                "Live funding requires FUNDING_NODE_URL in backend/app/local_constants.py."
+            )
         if (
             "trongrid" in self.funding_node_url.lower()
             and not self.funding_node_api_key.get_secret_value().strip()
         ):
-            raise ValueError("A TronGrid funding node requires TRONFORGE_FUNDING_NODE_API_KEY.")
+            raise ValueError(
+                "A TronGrid funding node requires FUNDING_NODE_API_KEY in "
+                "backend/app/local_constants.py."
+            )
         inline_key = self.funding_master_private_key.get_secret_value().strip()
         if not inline_key and not self.funding_master_private_key_file.strip():
             raise ValueError("Live funding requires a master private key or private-key file.")

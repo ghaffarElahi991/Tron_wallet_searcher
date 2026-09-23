@@ -70,9 +70,9 @@ second checks credentials, privileges, migrations and tables, then starts a temp
 
 ## Start the complete local stack
 
-After installation, set `TRONFORGE_GENERATOR_MODE=cuda` and a valid
-`TRONFORGE_TELEGRAM_BOT_TOKEN` in `backend/.env`, and make sure the native CUDA generator and
-NVIDIA driver can see at least one GPU. Then run:
+After installation, set `TRONFORGE_GENERATOR_MODE=cuda` in `backend/.env`, add the Telegram and
+funding credentials to the Git-ignored `backend/app/local_constants.py`, and make sure the native
+CUDA generator and NVIDIA driver can see at least one GPU. Then run:
 
 ```bash
 ./run.sh --check

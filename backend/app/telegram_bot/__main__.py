@@ -48,7 +48,8 @@ async def run() -> None:
     token = settings.telegram_bot_token.get_secret_value().strip()
     if not token:
         raise RuntimeError(
-            "TRONFORGE_TELEGRAM_BOT_TOKEN is empty. Create a bot with BotFather and configure it."
+            "TELEGRAM_BOT_TOKEN is empty in backend/app/local_constants.py. "
+            "Create a bot with BotFather and configure it."
         )
 
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))

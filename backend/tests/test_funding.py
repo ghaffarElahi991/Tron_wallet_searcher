@@ -295,11 +295,10 @@ def test_visible_trongrid_receipt_accepts_base58_contract_address() -> None:
     )
 
 
-def test_public_telegram_can_enable_shared_master_wallet_funding() -> None:
+def test_public_telegram_uses_default_shared_master_wallet_funding() -> None:
     settings = Settings(
         _env_file=None,
         telegram_public_access=True,
-        telegram_funding_enabled=True,
         telegram_allowed_user_id=0,
     )
     assert settings.telegram_funding_enabled is True
